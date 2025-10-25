@@ -9,9 +9,6 @@ from rest_framework.response import Response
 from rest_framework import permissions, status
 from django.views.decorators.csrf import csrf_exempt
 from .models import Deposit
-from dotenv import load_dotenv
-
-load_dotenv()
 
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")

@@ -6,8 +6,11 @@ from .serializers import RegisterSerializer, UserSerializer
 from .models import Wallet
 import phonenumbers
 from countryinfo import CountryInfo
+import logging
 
 User = get_user_model()
+
+logger = logging.getLogger(__name__)
 
 def get_country_from_phone(phone):
     try:
@@ -101,23 +104,57 @@ class LoginView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        email = request.data.get("email")
-        password = request.data.get("password")
-        user = authenticate(request, email=email, password=password)
-        if not user:
-            return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
-        refresh = RefreshToken.for_user(user)
-        wallet = user.wallet
-        return Response({
-            "user": {
-                **UserSerializer(user).data,
-                "wallet": {
+        try:
+            email = request.data.get("email")
+            password = request.data.get("password")
+
+            if not email or not password:
+                return Response(
+                    {"error": "Email and password are required."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            user = authenticate(request, email=email, password=password)
+            if not user:
+                return Response(
+                    {"error": "Invalid credentials."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            
+            refresh = RefreshToken.for_user(user)
+
+        
+            wallet_data = {}
+            try:
+                wallet = user.wallet
+                wallet_data = {
                     "balance": wallet.balance,
                     "currency": wallet.currency,
+                }
+            except Exception as wallet_error:
+                logger.warning(f"Wallet not found for user {user.email}: {wallet_error}")
+                wallet_data = {
+                    "balance": 0,
+                    "currency": "N/A",
+                }
+
+            
+            return Response({
+                "user": {
+                    **UserSerializer(user).data,
+                    "wallet": wallet_data,
                 },
-            },
-            "token": str(refresh.access_token),
-        }, status=status.HTTP_200_OK)
+                "token": str(refresh.access_token),
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"Login error: {str(e)}", exc_info=True)
+            return Response(
+                {"error": "An internal error occurred during login. Please try again later."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
 
 class UpdateUserProfileView(generics.UpdateAPIView):
     permission_classes = [permissions.IsAuthenticated]

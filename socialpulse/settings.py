@@ -1,6 +1,9 @@
 import os
 from pathlib import Path
 from datetime import timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -60,7 +63,7 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'HOST': os.getenv("DB_HOST"),
-        'PORT': os.getenv("DB_PORT", 5432),
+        'PORT': os.getenv("DB_PORT", 6543),
         'USER': os.getenv("DB_USER"),
         'PASSWORD': os.getenv("DB_PASSWORD"),
         'NAME': os.getenv("DB_NAME"),

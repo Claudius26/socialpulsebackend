@@ -6,6 +6,9 @@ from rest_framework.response import Response
 from .models import VirtualNumber, ReceivedSMS
 from .serializers import VirtualNumberSerializer
 
+from dotenv import load_dotenv
+load_dotenv()
+
 SMS_API_KEY = os.getenv("SMS_ACTIVATE_API_KEY")
 BASE_URL = "https://api.sms-activate.ae/stubs/handler_api.php"
 EXCHANGE_RATE_API_KEY = os.getenv("EXCHANGE_RATE_API_KEY")

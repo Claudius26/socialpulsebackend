@@ -4,17 +4,17 @@ from datetime import timedelta
 from dotenv import load_dotenv
 import dj_database_url
 
-# --- Load environment variables ---
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# --- Security & Debug ---
+
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-default-key")
 DEBUG = os.getenv("DEBUG", "False") == "True"
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 
-# --- Installed Apps ---
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -25,7 +25,6 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt",
     "corsheaders",
-    # Your apps
     "users",
     "payments",
     "support",
@@ -33,11 +32,10 @@ INSTALLED_APPS = [
     "virtualnumbers",
 ]
 
-# --- Middleware ---
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",  # ✅ for static files
+    "whitenoise.middleware.WhiteNoiseMiddleware",  
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -46,7 +44,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-# --- Root Config ---
+
 ROOT_URLCONF = "socialpulse.urls"
 
 TEMPLATES = [
@@ -66,8 +64,6 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "socialpulse.wsgi.application"
 
-# --- Database ---
-# Prefer DATABASE_URL for simplicity
 if os.getenv("DATABASE_URL"):
     DATABASES = {
         "default": dj_database_url.parse(
@@ -89,7 +85,7 @@ else:
         }
     }
 
-# --- Password validation ---
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -97,30 +93,31 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# --- Localization ---
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-# --- Static files ---
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 CORS_ALLOWED_ORIGINS = [
-    "https://socialpulse-cstr.vercel.app",  # ✅ Frontend domain
+    "https://socialpulse-cstr.vercel.app",
+    "http://localhost:5173",          
+    "http://127.0.0.1:5173", 
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    "https://socialpulse-cstr.vercel.app",  # ✅ Must start with https://
-    "https://socialpulsebackend.pxxl.io",   # ✅ Your backend domain (once deployed)
+    "https://socialpulse-cstr.vercel.app", 
+    "https://socialpulsebackend.pxxl.io",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",   
 ]
 
 CORS_ALLOW_CREDENTIALS = True
 
 
-# --- REST Framework ---
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -130,17 +127,15 @@ REST_FRAMEWORK = {
     ),
 }
 
-# --- JWT Settings ---
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(days=1),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
-# --- Custom User Model ---
+
 AUTH_USER_MODEL = "users.User"
 
-# --- External API Keys ---
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY")
 BACKEND_URL = os.getenv("BACKEND_URL")
@@ -152,5 +147,4 @@ EXCHANGE_RATE_API_KEY = os.getenv("EXCHANGE_RATE_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-# --- Default Auto Field ---
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

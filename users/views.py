@@ -162,6 +162,8 @@ class LoginView(generics.GenericAPIView):
                     {"error": "Invalid credentials."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+            
+            print("user country:", user.country)
 
             refresh = RefreshToken.for_user(user)
 

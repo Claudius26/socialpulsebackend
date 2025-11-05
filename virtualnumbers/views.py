@@ -5,7 +5,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from .models import VirtualNumber, ReceivedSMS
 from .serializers import VirtualNumberSerializer
-
+from django.conf import settings
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -106,6 +106,8 @@ class GetTopCountriesByServiceView(generics.GenericAPIView):
         exchange_rates = get_exchange_rates()
         rate = exchange_rates.get(wallet_currency, 1)
 
+        profit_margin = Decimal(str(getattr(settings, "VIRTUALNUMBER_PROFIT_MARGIN", 5.0)))
+
         url = f"{BASE_URL}?api_key={SMS_API_KEY}&action=getTopCountriesByService&service={service_code}"
         try:
             r = requests.get(url, timeout=15)
@@ -115,7 +117,7 @@ class GetTopCountriesByServiceView(generics.GenericAPIView):
                 try:
                     country_id = str(entry.get("country"))
                     price_usd = safe_decimal(entry.get("price"))
-                    price_with_profit_usd = (price_usd * Decimal("1.30")).quantize(Decimal("0.0001"))
+                    price_with_profit_usd = (price_usd * (Decimal("1.0") + profit_margin)).quantize(Decimal("0.0001"))
                     price_local = (price_usd * Decimal(rate)).quantize(Decimal("0.0001"))
                     price_with_profit_local = (price_with_profit_usd * Decimal(rate)).quantize(Decimal("0.0001"))
 
@@ -175,6 +177,8 @@ class PurchaseNumberView(generics.GenericAPIView):
         exchange_rates = get_exchange_rates()
         rate = exchange_rates.get(wallet_currency, 1)
 
+        profit_margin = Decimal(str(getattr(settings, "VIRTUALNUMBER_PROFIT_MARGIN", 5.0)))
+
         url = f"{BASE_URL}?api_key={SMS_API_KEY}&action=getTopCountriesByService&service={service_code}"
         try:
             r = requests.get(url, timeout=15)
@@ -184,7 +188,7 @@ class PurchaseNumberView(generics.GenericAPIView):
                 return Response({"error": "country not available for this service"}, status=400)
 
             price_usd = safe_decimal(country_entry.get("price"))
-            price_with_profit_usd = (price_usd * Decimal("1.30")).quantize(Decimal("0.0001"))
+            price_with_profit_usd = (price_usd * (Decimal("1.0") + profit_margin)).quantize(Decimal("0.0001"))
             cost_local = (price_with_profit_usd * Decimal(rate)).quantize(Decimal("0.0001"))
         except Exception:
             cost_local = Decimal("0.15")
@@ -255,4 +259,3 @@ class NumberHistoryView(generics.ListAPIView):
         return VirtualNumber.objects.filter(
             user=self.request.user
         ).order_by("-created_at")
-

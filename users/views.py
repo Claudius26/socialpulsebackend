@@ -14,14 +14,14 @@ logger = logging.getLogger(__name__)
 def get_currency_from_country(country_name):
     try:
         if not country_name:
-            return "USD"
+            return "NGN"
         country = CountryInfo(country_name)
         currencies = country.currencies()
         if currencies and len(currencies) > 0:
             return currencies[0]
     except Exception:
         pass
-    return "USD"
+    return "NGN"
 
 
 class RegisterManualView(generics.CreateAPIView):
@@ -136,7 +136,7 @@ class LoginWithGoogleView(generics.GenericAPIView):
                 **UserSerializer(user).data,
                 "wallet": {
                     "balance": wallet.balance if wallet else 0,
-                    "currency": wallet.currency if wallet else "USD",
+                    "currency": wallet.currency if wallet else "NGN",
                 },
             },
             "token": str(refresh.access_token),
@@ -178,7 +178,7 @@ class LoginView(generics.GenericAPIView):
                 logger.warning(f"Wallet not found for user {user.email}: {wallet_error}")
                 wallet_data = {
                     "balance": 0,
-                    "currency": "N/A",
+                    "currency": "NGN",
                 }
 
             return Response({

@@ -106,7 +106,7 @@ class GetTopCountriesByServiceView(generics.GenericAPIView):
         exchange_rates = get_exchange_rates()
         rate = exchange_rates.get(wallet_currency, 1)
 
-        profit_margin = Decimal(str(getattr(settings, "VIRTUALNUMBER_PROFIT_MARGIN", 5.0)))
+        profit_margin = Decimal(str(getattr(settings, "VIRTUALNUMBER_PROFIT_MARGIN", 0.8)))
 
         url = f"{BASE_URL}?api_key={SMS_API_KEY}&action=getTopCountriesByService&service={service_code}"
         try:

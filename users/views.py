@@ -6,10 +6,13 @@ from .serializers import RegisterSerializer, UserSerializer
 from .models import Wallet
 from countryinfo import CountryInfo
 import logging
+import requests
+import time
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
+exchange_cache = {}
 
 def get_currency_from_country(country_name):
     try:
@@ -22,6 +25,35 @@ def get_currency_from_country(country_name):
     except Exception:
         pass
     return "NGN"
+
+
+def get_exchange_rates(base_currency):
+    now = time.time()
+    if base_currency in exchange_cache:
+        cached = exchange_cache[base_currency]
+        if now - cached["timestamp"] < 3600: 
+            return cached["rates"]
+    try:
+        url = f"https://api.exchangerate-api.com/v4/latest/{base_currency}"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            rates = data.get("rates", {})
+            exchange_cache[base_currency] = {"rates": rates, "timestamp": now}
+            return rates
+    except Exception as e:
+        logger.warning(f"Failed to fetch exchange rates: {e}")
+    return {}
+
+
+def convert_currency(amount, from_currency, to_currency):
+    if from_currency == to_currency:
+        return amount
+    rates = get_exchange_rates(from_currency)
+    rate = rates.get(to_currency)
+    if rate:
+        return round(amount * rate, 2)
+    return amount
 
 
 class RegisterManualView(generics.CreateAPIView):
@@ -41,7 +73,6 @@ class RegisterManualView(generics.CreateAPIView):
         country_name = serializer.validated_data.get("country")
         currency = get_currency_from_country(country_name)
 
-        
         Wallet.objects.create(user=user, currency=currency)
 
         refresh = RefreshToken.for_user(user)
@@ -60,6 +91,7 @@ class RegisterManualView(generics.CreateAPIView):
         }
 
         return Response(response_data, status=status.HTTP_201_CREATED)
+
 
 class RegisterGoogleView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
@@ -106,7 +138,7 @@ class RegisterGoogleView(generics.GenericAPIView):
 
         return Response(response_data, status=status.HTTP_201_CREATED)
 
-    
+
 class LoginWithGoogleView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
 
@@ -141,6 +173,7 @@ class LoginWithGoogleView(generics.GenericAPIView):
             },
             "token": str(refresh.access_token),
         }, status=status.HTTP_200_OK)
+
 
 class LoginView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
@@ -246,6 +279,7 @@ class UserDashboardView(generics.RetrieveAPIView):
         currency = get_currency_from_country(country_name)
 
         if wallet and wallet.currency != currency:
+            wallet.balance = convert_currency(wallet.balance, wallet.currency, currency)
             wallet.currency = currency
             wallet.save()
 

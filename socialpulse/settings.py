@@ -9,7 +9,7 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-VIRTUALNUMBER_PROFIT_MARGIN = 0.8 
+VIRTUALNUMBER_PROFIT_MARGIN = 0.65 
 
 
 

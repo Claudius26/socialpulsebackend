@@ -8,6 +8,12 @@ from countryinfo import CountryInfo
 import logging
 import requests
 import time
+from payments.models import Deposit
+from boost.models import BoostRequest
+from virtualnumbers.models import VirtualNumber
+from decimal import Decimal
+from django.db.models import Sum, Count
+from rest_framework import generics, permissions
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -293,3 +299,52 @@ class UserDashboardView(generics.RetrieveAPIView):
                 "country": country_name,
             }
         })
+    
+class UserSummaryView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        deposited_total = (
+            Deposit.objects.filter(user=user, status="paid")
+            .aggregate(total=Sum("amount"))
+            .get("total")
+            or Decimal("0")
+        )
+
+        numbers_spent_total = (
+            VirtualNumber.objects.filter(user=user)
+            .aggregate(total=Sum("cost"))
+            .get("total")
+            or Decimal("0")
+        )
+
+        boost_spent_total = (
+            BoostRequest.objects.filter(user=user)
+            .exclude(status="Failed")
+            .filter(amount__gt=0)
+            .aggregate(total=Sum("amount"))
+            .get("total")
+            or Decimal("0")
+        )
+
+        numbers_count = VirtualNumber.objects.filter(user=user).count()
+        paid_deposits_count = Deposit.objects.filter(user=user, status="paid").count()
+        boost_count = BoostRequest.objects.filter(user=user).count()
+
+        overall_spending = numbers_spent_total + boost_spent_total
+
+        return Response({
+            "totals": {
+                "deposited": float(deposited_total),
+                "spent_on_numbers": float(numbers_spent_total),
+                "spent_on_boost": float(boost_spent_total),
+                "overall_spending": float(overall_spending),
+            },
+            "counts": {
+                "numbers_purchased": numbers_count,
+                "deposits_paid": paid_deposits_count,
+                "boost_requests": boost_count,
+            }
+        })    

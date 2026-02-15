@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from .models import BoostRequest
 from .serializers import BoostRequestSerializer
 
+
 SMM_API_KEY = os.getenv("SMM_API_KEY")
 SMM_API_URL = os.getenv("SMM_API_URL", "https://resellersmm.com/api/v2")
 
@@ -203,12 +204,23 @@ class BoostRequestListCreateView(generics.ListCreateAPIView):
                 data = {"error": response.text}
 
             if "order" in data:
+  
+                if wallet.balance <             boost_request.amount:
+                    boost_request.status = "Failed"
+                    boost_request.error_message = "Insufficient wallet balance."
+                    boost_request.save()
+                    return
+
+                wallet.balance -= boost_request.amount
+                wallet.save()
+
                 boost_request.smm_order_id = data["order"]
                 boost_request.status = "Processing"
                 boost_request.error_message = None
             else:
                 boost_request.status = "Failed"
                 boost_request.error_message = data.get("error", "Unknown error from SMM provider")
+
 
             boost_request.save()
 
@@ -242,7 +254,7 @@ class BoostRequestStatusUpdateView(generics.GenericAPIView):
             boost_request.smm_currency = data.get("currency", "USD")
             boost_request.status = data.get("status", "Processing").capitalize()
             boost_request.error_message = data.get("error")
-            boost_request.delivery_time = data.get("average_time")  # update delivery time dynamically
+            boost_request.delivery_time = data.get("average_time")  
             boost_request.save()
 
             return Response({"success": True, "status": boost_request.status, "details": data})

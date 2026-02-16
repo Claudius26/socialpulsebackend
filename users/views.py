@@ -1,26 +1,31 @@
+import logging
+import time
+from decimal import Decimal
+
+import requests
+from countryinfo import CountryInfo
+from django.contrib.auth import authenticate, get_user_model
+from django.db.models import Sum
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
-from django.contrib.auth import authenticate, get_user_model
-from .serializers import RegisterSerializer, UserSerializer
-from .models import Wallet
-from countryinfo import CountryInfo
-import logging
-import requests
-import time
-from payments.models import Deposit
+
 from boost.models import BoostRequest
+from payments.models import Deposit
 from virtualnumbers.models import VirtualNumber
-from decimal import Decimal
-from django.db.models import Sum, Count
-from rest_framework import generics, permissions
+
+from .models import Wallet
+from .serializers import RegisterSerializer, UserSerializer
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
+
 exchange_cache = {}
 
-def get_currency_from_country(country_name):
+
+def get_currency_from_country(country_name: str) -> str:
+   
     try:
         if not country_name:
             return "NGN"
@@ -33,12 +38,14 @@ def get_currency_from_country(country_name):
     return "NGN"
 
 
-def get_exchange_rates(base_currency):
+def get_exchange_rates(base_currency: str) -> dict:
+    
     now = time.time()
     if base_currency in exchange_cache:
         cached = exchange_cache[base_currency]
-        if now - cached["timestamp"] < 3600: 
+        if now - cached["timestamp"] < 3600:
             return cached["rates"]
+
     try:
         url = f"https://api.exchangerate-api.com/v4/latest/{base_currency}"
         res = requests.get(url, timeout=5)
@@ -49,20 +56,74 @@ def get_exchange_rates(base_currency):
             return rates
     except Exception as e:
         logger.warning(f"Failed to fetch exchange rates: {e}")
+
     return {}
 
 
-def convert_currency(amount, from_currency, to_currency):
+def convert_currency(amount, from_currency: str, to_currency: str):
+    """
+    Convert amount from one currency to another using cached rates.
+    """
     if from_currency == to_currency:
         return amount
+
     rates = get_exchange_rates(from_currency)
     rate = rates.get(to_currency)
     if rate:
-        return round(amount * rate, 2)
+        return round(Decimal(str(amount)) * Decimal(str(rate)), 2)
+
     return amount
 
 
+def build_user_summary(user) -> dict:
+    
+    deposited_total = (
+        Deposit.objects.filter(user=user, status="paid")
+        .aggregate(total=Sum("amount"))
+        .get("total")
+        or Decimal("0")
+    )
+
+    
+    numbers_spent_total = (
+        VirtualNumber.objects.filter(user=user, charged=True)
+        .aggregate(total=Sum("cost"))
+        .get("total")
+        or Decimal("0")
+    )
+
+    boost_spent_total = (
+        BoostRequest.objects.filter(user=user)
+        .exclude(status="Failed")
+        .filter(amount__gt=0)
+        .aggregate(total=Sum("amount"))
+        .get("total")
+        or Decimal("0")
+    )
+
+    numbers_count = VirtualNumber.objects.filter(user=user).count()
+    paid_deposits_count = Deposit.objects.filter(user=user, status="paid").count()
+    boost_count = BoostRequest.objects.filter(user=user).count()
+
+    overall_spending = numbers_spent_total + boost_spent_total
+
+    return {
+        "totals": {
+            "deposited": float(deposited_total),
+            "spent_on_numbers": float(numbers_spent_total),
+            "spent_on_boost": float(boost_spent_total),
+            "overall_spending": float(overall_spending),
+        },
+        "counts": {
+            "numbers_purchased": numbers_count,
+            "deposits_paid": paid_deposits_count,
+            "boost_requests": boost_count,
+        },
+    }
+
+
 class RegisterManualView(generics.CreateAPIView):
+  
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
@@ -79,106 +140,30 @@ class RegisterManualView(generics.CreateAPIView):
         country_name = serializer.validated_data.get("country")
         currency = get_currency_from_country(country_name)
 
-        Wallet.objects.create(user=user, currency=currency)
+        Wallet.objects.get_or_create(user=user, defaults={"currency": currency})
 
-        refresh = RefreshToken.for_user(user)
-        wallet = user.wallet
-
-        response_data = {
-            "user": {
-                **UserSerializer(user).data,
-                "wallet": {
-                    "balance": wallet.balance,
-                    "currency": wallet.currency,
-                },
-                "country": country_name,
-            },
-            "token": str(refresh.access_token),
-        }
-
-        return Response(response_data, status=status.HTTP_201_CREATED)
-
-
-class RegisterGoogleView(generics.GenericAPIView):
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        email = request.data.get("email")
-        full_name = request.data.get("fullName")
-        google_id = request.data.get("google_id")
-        country_name = request.data.get("country")
-
-        if not email or not google_id:
-            return Response({"error": "Missing Google account details."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if User.objects.filter(email=email).exists():
-            return Response(
-                {"error": "A user with this email already exists."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        user = User.objects.create(
-            email=email,
-            full_name=full_name,
-            username=email.split("@")[0],
-        )
-
-        currency = get_currency_from_country(country_name)
-
-        Wallet.objects.create(user=user, currency=currency)
-
-        refresh = RefreshToken.for_user(user)
-        wallet = user.wallet
-
-        response_data = {
-            "user": {
-                **UserSerializer(user).data,
-                "wallet": {
-                    "balance": wallet.balance,
-                    "currency": wallet.currency,
-                },
-                "country": country_name,
-            },
-            "token": str(refresh.access_token),
-        }
-
-        return Response(response_data, status=status.HTTP_201_CREATED)
-
-
-class LoginWithGoogleView(generics.GenericAPIView):
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        email = request.data.get("email")
-        google_id = request.data.get("google_id")
-
-        if not email or not google_id:
-            return Response(
-                {"error": "Email and Google ID are required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        user = User.objects.filter(email=email).first()
-        if not user:
-            return Response(
-                {"error": "No account found for this Google user. Please register first."},
-                status=status.HTTP_404_NOT_FOUND
-            )
+        wallet = getattr(user, "wallet", None)
+        if wallet and wallet.currency != currency:
+            wallet.currency = currency
+            wallet.save(update_fields=["currency"])
 
         refresh = RefreshToken.for_user(user)
         wallet = getattr(user, "wallet", None)
 
-        return Response({
-            "message": "Login successful",
+        response_data = {
             "user": {
                 **UserSerializer(user).data,
                 "wallet": {
                     "balance": wallet.balance if wallet else 0,
-                    "currency": wallet.currency if wallet else "NGN",
+                    "reserved_balance": getattr(wallet, "reserved_balance", 0) if wallet else 0,
+                    "currency": wallet.currency if wallet else currency,
                 },
             },
+            "summary": build_user_summary(user),
             "token": str(refresh.access_token),
-        }, status=status.HTTP_200_OK)
+        }
+
+        return Response(response_data, status=status.HTTP_201_CREATED)
 
 
 class LoginView(generics.GenericAPIView):
@@ -192,48 +177,72 @@ class LoginView(generics.GenericAPIView):
             if not email or not password:
                 return Response(
                     {"error": "Email and password are required."},
-                    status=status.HTTP_400_BAD_REQUEST
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             user = authenticate(request, email=email, password=password)
             if not user:
                 return Response(
                     {"error": "Invalid credentials."},
-                    status=status.HTTP_400_BAD_REQUEST
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            
-            print("user country:", user.country)
+
+            wallet = getattr(user, "wallet", None)
+            if not wallet:
+                currency = get_currency_from_country(user.country)
+                wallet, _ = Wallet.objects.get_or_create(user=user, defaults={"currency": currency})
 
             refresh = RefreshToken.for_user(user)
 
-            wallet_data = {}
-            try:
-                wallet = user.wallet
-                wallet_data = {
-                    "balance": wallet.balance,
-                    "currency": wallet.currency,
-                }
-            except Exception as wallet_error:
-                logger.warning(f"Wallet not found for user {user.email}: {wallet_error}")
-                wallet_data = {
-                    "balance": 0,
-                    "currency": "NGN",
-                }
-
-            return Response({
-                "user": {
-                    **UserSerializer(user).data,
-                    "wallet": wallet_data,
+            return Response(
+                {
+                    "user": {
+                        **UserSerializer(user).data,
+                        "wallet": {
+                            "balance": wallet.balance,
+                            "reserved_balance": getattr(wallet, "reserved_balance", 0),
+                            "currency": wallet.currency,
+                        },
+                    },
+                    "summary": build_user_summary(user),
+                    "token": str(refresh.access_token),
                 },
-                "token": str(refresh.access_token),
-            }, status=status.HTTP_200_OK)
+                status=status.HTTP_200_OK,
+            )
 
         except Exception as e:
             logger.error(f"Login error: {str(e)}", exc_info=True)
             return Response(
                 {"error": "An internal error occurred during login. Please try again later."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+class MeView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        wallet = getattr(user, "wallet", None)
+        if not wallet:
+            currency = get_currency_from_country(user.country)
+            wallet, _ = Wallet.objects.get_or_create(user=user, defaults={"currency": currency})
+
+        return Response(
+            {
+                "user": {
+                    **UserSerializer(user).data,
+                    "wallet": {
+                        "balance": wallet.balance,
+                        "reserved_balance": getattr(wallet, "reserved_balance", 0),
+                        "currency": wallet.currency,
+                    },
+                },
+                "summary": build_user_summary(user),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class UpdateUserProfileView(generics.UpdateAPIView):
@@ -268,83 +277,21 @@ class UpdateUserProfileView(generics.UpdateAPIView):
             user.set_password(new_password)
             user.save()
 
+        try:
+            wallet = getattr(user, "wallet", None)
+            if wallet and "country" in serializer.validated_data:
+                new_currency = get_currency_from_country(user.country)
+                if wallet.currency != new_currency:
+                    wallet.currency = new_currency
+                    wallet.save(update_fields=["currency"])
+        except Exception:
+            pass
+
         return Response(
-            {"message": "Profile updated successfully.", "user": serializer.data},
+            {
+                "message": "Profile updated successfully.",
+                "user": serializer.data,
+                "summary": build_user_summary(user),
+            },
             status=status.HTTP_200_OK,
         )
-
-
-class UserDashboardView(generics.RetrieveAPIView):
-    permission_classes = [permissions.IsAuthenticated]
-    serializer_class = UserSerializer
-
-    def get(self, request, *args, **kwargs):
-        user = request.user
-        wallet = getattr(user, "wallet", None)
-        country_name = user.country
-        currency = get_currency_from_country(country_name)
-
-        if wallet and wallet.currency != currency:
-            wallet.balance = convert_currency(wallet.balance, wallet.currency, currency)
-            wallet.currency = currency
-            wallet.save()
-
-        return Response({
-            "user": {
-                **UserSerializer(user).data,
-                "wallet": {
-                    "balance": wallet.balance if wallet else 0,
-                    "currency": wallet.currency if wallet else currency,
-                },
-                "country": country_name,
-            }
-        })
-    
-class UserSummaryView(generics.GenericAPIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        user = request.user
-
-        deposited_total = (
-            Deposit.objects.filter(user=user, status="paid")
-            .aggregate(total=Sum("amount"))
-            .get("total")
-            or Decimal("0")
-        )
-
-        numbers_spent_total = (
-            VirtualNumber.objects.filter(user=user)
-            .aggregate(total=Sum("cost"))
-            .get("total")
-            or Decimal("0")
-        )
-
-        boost_spent_total = (
-            BoostRequest.objects.filter(user=user)
-            .exclude(status="Failed")
-            .filter(amount__gt=0)
-            .aggregate(total=Sum("amount"))
-            .get("total")
-            or Decimal("0")
-        )
-
-        numbers_count = VirtualNumber.objects.filter(user=user).count()
-        paid_deposits_count = Deposit.objects.filter(user=user, status="paid").count()
-        boost_count = BoostRequest.objects.filter(user=user).count()
-
-        overall_spending = numbers_spent_total + boost_spent_total
-
-        return Response({
-            "totals": {
-                "deposited": float(deposited_total),
-                "spent_on_numbers": float(numbers_spent_total),
-                "spent_on_boost": float(boost_spent_total),
-                "overall_spending": float(overall_spending),
-            },
-            "counts": {
-                "numbers_purchased": numbers_count,
-                "deposits_paid": paid_deposits_count,
-                "boost_requests": boost_count,
-            }
-        })    

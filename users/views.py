@@ -244,7 +244,6 @@ class MeView(generics.GenericAPIView):
             status=status.HTTP_200_OK,
         )
 
-
 class UpdateUserProfileView(generics.UpdateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = UserSerializer
@@ -263,6 +262,7 @@ class UpdateUserProfileView(generics.UpdateAPIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
+        
         if new_password:
             if not old_password:
                 return Response(
@@ -277,20 +277,28 @@ class UpdateUserProfileView(generics.UpdateAPIView):
             user.set_password(new_password)
             user.save()
 
-        try:
-            wallet = getattr(user, "wallet", None)
-            if wallet and "country" in serializer.validated_data:
-                new_currency = get_currency_from_country(user.country)
-                if wallet.currency != new_currency:
-                    wallet.currency = new_currency
-                    wallet.save(update_fields=["currency"])
-        except Exception:
-            pass
+        wallet = getattr(user, "wallet", None)
+        if not wallet:
+            currency = get_currency_from_country(user.country)
+            wallet, _ = Wallet.objects.get_or_create(user=user, defaults={"currency": currency})
+
+        if "country" in serializer.validated_data:
+            new_currency = get_currency_from_country(user.country)
+            if wallet.currency != new_currency:
+                wallet.currency = new_currency
+                wallet.save(update_fields=["currency"])
 
         return Response(
             {
                 "message": "Profile updated successfully.",
-                "user": serializer.data,
+                "user": {
+                    **UserSerializer(user).data,
+                    "wallet": {
+                        "balance": wallet.balance,
+                        "reserved_balance": getattr(wallet, "reserved_balance", 0),
+                        "currency": wallet.currency,
+                    },
+                },
                 "summary": build_user_summary(user),
             },
             status=status.HTTP_200_OK,

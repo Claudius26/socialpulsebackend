@@ -14,3 +14,13 @@ urlpatterns = [
     path("callback/", deposit_callback, name="deposit_callback"),
     path("transactions/", transaction_history, name="transaction_history"),
 ]
+
+
+
+from django.urls import path
+from .views import get_bank_transfer_account, paystack_webhook
+
+urlpatterns = [
+    path("bank/account/", get_bank_transfer_account, name="bank_transfer_account"),
+    path("webhook/paystack/", paystack_webhook, name="paystack_webhook"),
+]

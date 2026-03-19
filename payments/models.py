@@ -22,15 +22,6 @@ class Deposit(models.Model):
 
     def __str__(self):
         return f"{self.user} - {self.amount} ({self.status})"
-    
-    channel = models.CharField(max_length=30, blank=True, null=True)
-    provider_reference = models.CharField(max_length=255, null=True, blank=True, db_index=True)
-
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["provider_reference"]),
-        ]
 
     
 

@@ -7,3 +7,10 @@ urlpatterns = [
     path("me/", MeView.as_view(), name="me"),
     path("update_profile/", UpdateUserProfileView.as_view(), name="update-profile"),
 ]
+
+from django.urls import path
+from .views import admin_login
+
+urlpatterns += [
+    path("admin/login/", admin_login, name="admin_login"),
+]

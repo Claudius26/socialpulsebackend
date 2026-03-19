@@ -303,3 +303,16 @@ class UpdateUserProfileView(generics.UpdateAPIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework import permissions, status
+from .serializers_admin import AdminLoginSerializer
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def admin_login(request):
+    serializer = AdminLoginSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    return Response(serializer.validated_data, status=status.HTTP_200_OK)

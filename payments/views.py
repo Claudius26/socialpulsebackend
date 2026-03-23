@@ -12,6 +12,11 @@ from .models import Deposit
 from django.db import transaction
 from django.db.models import F
 from django.contrib.auth import get_user_model
+from common.cache_keys import admin_users_key
+from common.cache_utils import get_or_set_cache
+from common.cache_keys import admin_deposits_key
+from common.cache_keys import admin_deposits_key, dashboard_stats_key
+from common.cache_utils import delete_cache_keys
 
 from .services.whatsapp import send_admin_whatsapp
 
@@ -92,6 +97,11 @@ def admin_confirm_manual_deposit(request, pk):
         dep.status = "paid"
         dep.confirmed_at = timezone.now()
         dep.save(update_fields=["status", "confirmed_at"])
+
+        delete_cache_keys(
+        admin_deposits_key(),
+        dashboard_stats_key(),
+        )
 
         wallet = dep.user.wallet
         wallet.balance = F("balance") + dep.amount
@@ -282,41 +292,46 @@ def transaction_history(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAdminUser])
 def admin_list_users(request):
-    users = User.objects.all().order_by("-date_joined")
+    def fetch_users():
+        users = User.objects.all().order_by("-date_joined")
+        return [
+            {
+                "id": u.id,
+                "username": u.username,
+                "email": u.email,
+                "full_name": getattr(u, "full_name", ""),
+                "country": getattr(u, "country", None),
+                "is_active": u.is_active,
+                "is_staff": u.is_staff,
+                "date_joined": u.date_joined.isoformat() if u.date_joined else None,
+            }
+            for u in users
+        ]
 
-    data = [
-        {
-            "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "full_name": getattr(u, "full_name", ""),
-            "country": getattr(u, "country", None),
-            "is_active": u.is_active,
-            "is_staff": u.is_staff,
-            "date_joined": u.date_joined,
-        }
-        for u in users
-    ]
+    data = get_or_set_cache(admin_users_key(), fetch_users, timeout=300)
     return Response(data, status=200)
+
 
 @api_view(["GET"])
 @permission_classes([permissions.IsAdminUser])
 def admin_list_deposits(request):
-    deposits = Deposit.objects.select_related("user").all().order_by("-created_at")
+    def fetch_deposits():
+        deposits = Deposit.objects.select_related("user").all().order_by("-created_at")
+        return [
+            {
+                "id": str(d.id),
+                "user_email": d.user.email,
+                "amount": float(d.amount),
+                "currency": d.currency,
+                "method": d.method,
+                "status": d.status,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+                "confirmed_at": d.confirmed_at.isoformat() if d.confirmed_at else None,
+            }
+            for d in deposits
+        ]
 
-    data = [
-        {
-            "id": str(d.id),
-            "user_email": d.user.email,
-            "amount": float(d.amount),
-            "currency": d.currency,
-            "method": d.method,
-            "status": d.status,
-            "created_at": d.created_at,
-            "confirmed_at": d.confirmed_at,
-        }
-        for d in deposits
-    ]
+    data = get_or_set_cache(admin_deposits_key(), fetch_deposits, timeout=180)
     return Response(data, status=200)
 
 @api_view(["POST"])
@@ -335,5 +350,10 @@ def admin_reject_manual_deposit(request, pk):
     payload["reject_reason"] = reason
     dep.provider_payload = payload
     dep.save(update_fields=["status", "confirmed_at", "provider_payload"])
+
+    delete_cache_keys(
+        admin_deposits_key(),
+        dashboard_stats_key(),
+    )
 
     return Response({"message": "Deposit rejected"}, status=200)

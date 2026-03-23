@@ -9,6 +9,11 @@ from django.db.models import Sum
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth import update_session_auth_hash
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework import permissions, status
+from common.cache_keys import admin_profile_key
+from common.cache_utils import get_or_set_cache, delete_cache_keys
 
 from boost.models import BoostRequest
 from payments.models import Deposit
@@ -309,6 +314,10 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import permissions, status
 from .serializers_admin import AdminLoginSerializer
+from common.cache_keys import admin_profile_key, admin_users_key
+
+from common.cache_keys import dashboard_stats_key
+from common.cache_utils import get_or_set_cache
 
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
@@ -316,3 +325,135 @@ def admin_login(request):
     serializer = AdminLoginSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     return Response(serializer.validated_data, status=status.HTTP_200_OK)
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAdminUser])
+def admin_dashboard_stats(request):
+    def fetch_stats():
+        total_users = User.objects.count()
+        total_deposits = Deposit.objects.count()
+        pending_deposits = Deposit.objects.filter(status="pending").count()
+        paid_deposits = Deposit.objects.filter(status="paid").count()
+        failed_deposits = Deposit.objects.filter(status="failed").count()
+
+        return {
+            "total_users": total_users,
+            "total_deposits": total_deposits,
+            "pending_deposits": pending_deposits,
+            "paid_deposits": paid_deposits,
+            "failed_deposits": failed_deposits,
+        }
+
+    data = get_or_set_cache(dashboard_stats_key(), fetch_stats, timeout=120)
+    return Response(data, status=200)
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAdminUser])
+def admin_profile(request):
+    user = request.user
+
+    def fetch_profile():
+        return {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "full_name": getattr(user, "full_name", ""),
+            "is_staff": user.is_staff,
+            "is_superuser": user.is_superuser,
+            "last_login": user.last_login.isoformat() if user.last_login else None,
+            "date_joined": user.date_joined.isoformat() if user.date_joined else None,
+        }
+
+    data = get_or_set_cache(admin_profile_key(user.id), fetch_profile, timeout=300)
+    return Response(data, status=200)
+
+
+@api_view(["PUT"])
+@permission_classes([permissions.IsAdminUser])
+def admin_update_profile(request):
+    user = request.user
+
+    username = request.data.get("username", "").strip()
+    full_name = request.data.get("full_name", "").strip()
+
+    if username:
+        existing_user = User.objects.filter(username=username).exclude(id=user.id).first()
+        if existing_user:
+            return Response({"error": "Username already exists"}, status=400)
+        user.username = username
+
+    if hasattr(user, "full_name"):
+        user.full_name = full_name
+
+    user.save()
+
+    delete_cache_keys(admin_profile_key(user.id), admin_users_key())
+
+    return Response({
+        "message": "Profile updated successfully"
+    }, status=200)
+
+
+@api_view(["PUT"])
+@permission_classes([permissions.IsAdminUser])
+def admin_change_password(request):
+    user = request.user
+
+    current_password = request.data.get("current_password", "")
+    new_password = request.data.get("new_password", "")
+    confirm_password = request.data.get("confirm_password", "")
+
+    if not current_password or not new_password or not confirm_password:
+        return Response(
+            {"error": "All password fields are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not user.check_password(current_password):
+        return Response(
+            {"error": "Current password is incorrect"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if new_password != confirm_password:
+        return Response(
+            {"error": "New password and confirm password do not match"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if len(new_password) < 6:
+        return Response(
+            {"error": "New password must be at least 6 characters"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    user.set_password(new_password)
+    user.save()
+
+    update_session_auth_hash(request, user)
+
+    return Response(
+        {"message": "Password updated successfully"},
+        status=status.HTTP_200_OK,
+    )
+from django.core.cache import cache
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
+@api_view(["GET"])
+def cache_test(request):
+    try:
+        cache.set("test_key", "redis is working", timeout=60)
+        value = cache.get("test_key")
+
+        return Response({
+            "success": True,
+            "message": "Cache test worked",
+            "cached_value": value
+        })
+    except Exception as e:
+        return Response({
+            "success": False,
+            "error": str(e)
+        }, status=500)

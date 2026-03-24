@@ -19,9 +19,14 @@ from common.cache_keys import (
     admin_users_key,
     admin_dashboard_stats_key,
     user_profile_key,
-    user_summary_key,
-    user_transactions_key,
+    user_summary_key
 )
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework import permissions, status
+from .serializers_admin import AdminLoginSerializer
+
 
 
 from boost.models import BoostRequest
@@ -321,14 +326,6 @@ class UpdateUserProfileView(generics.UpdateAPIView):
         )
 
 
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.response import Response
-from rest_framework import permissions, status
-from .serializers_admin import AdminLoginSerializer
-from common.cache_keys import admin_profile_key, admin_users_key
-
-from common.cache_keys import dashboard_stats_key
-from common.cache_utils import get_or_set_cache
 
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
@@ -355,7 +352,7 @@ def admin_dashboard_stats(request):
             "failed_deposits": failed_deposits,
         }
 
-    data = get_or_set_cache(dashboard_stats_key(), fetch_stats, timeout=120)
+    data = get_or_set_cache(admin_dashboard_stats_key(), fetch_stats, timeout=120)
     return Response(data, status=200)
 
 

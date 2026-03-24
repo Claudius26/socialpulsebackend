@@ -12,11 +12,8 @@ from .models import Deposit
 from django.db import transaction
 from django.db.models import F
 from django.contrib.auth import get_user_model
-from common.cache_keys import admin_dashboard_stats_key, admin_users_key, user_profile_key, user_summary_key, user_transactions_key
-from common.cache_utils import get_or_set_cache
-from common.cache_keys import admin_deposits_key
-from common.cache_keys import admin_deposits_key, dashboard_stats_key
-from common.cache_utils import delete_cache_keys
+from common.cache_keys import admin_dashboard_stats_key, admin_users_key, user_profile_key, user_summary_key, user_transactions_key,admin_deposits_key
+from common.cache_utils import delete_cache_keys,get_or_set_cache
 
 from .services.whatsapp import send_admin_whatsapp
 

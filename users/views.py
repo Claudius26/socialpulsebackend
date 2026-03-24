@@ -12,8 +12,17 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import update_session_auth_hash
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework import permissions, status
-from common.cache_keys import admin_profile_key
 from common.cache_utils import get_or_set_cache, delete_cache_keys
+
+from common.cache_keys import (
+    admin_profile_key,
+    admin_users_key,
+    admin_dashboard_stats_key,
+    user_profile_key,
+    user_summary_key,
+    user_transactions_key,
+)
+
 
 from boost.models import BoostRequest
 from payments.models import Deposit
@@ -25,8 +34,6 @@ from .serializers import RegisterSerializer, UserSerializer
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
-
-exchange_cache = {}
 
 
 def get_currency_from_country(country_name: str) -> str:
@@ -44,25 +51,20 @@ def get_currency_from_country(country_name: str) -> str:
 
 
 def get_exchange_rates(base_currency: str) -> dict:
-    
-    now = time.time()
-    if base_currency in exchange_cache:
-        cached = exchange_cache[base_currency]
-        if now - cached["timestamp"] < 3600:
-            return cached["rates"]
+    cache_key = f"exchange_rates:{base_currency}"
 
-    try:
-        url = f"https://api.exchangerate-api.com/v4/latest/{base_currency}"
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            rates = data.get("rates", {})
-            exchange_cache[base_currency] = {"rates": rates, "timestamp": now}
-            return rates
-    except Exception as e:
-        logger.warning(f"Failed to fetch exchange rates: {e}")
+    def fetch_rates():
+        try:
+            url = f"https://api.exchangerate-api.com/v4/latest/{base_currency}"
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                return data.get("rates", {})
+        except Exception as e:
+            logger.warning(f"Failed to fetch exchange rates: {e}")
+        return {}
 
-    return {}
+    return get_or_set_cache(cache_key, fetch_rates, timeout=3600)
 
 
 def convert_currency(amount, from_currency: str, to_currency: str):
@@ -229,25 +231,29 @@ class MeView(generics.GenericAPIView):
     def get(self, request):
         user = request.user
 
-        wallet = getattr(user, "wallet", None)
-        if not wallet:
-            currency = get_currency_from_country(user.country)
-            wallet, _ = Wallet.objects.get_or_create(user=user, defaults={"currency": currency})
+        def fetch_me():
+            wallet = getattr(user, "wallet", None)
+            if not wallet:
+                currency = get_currency_from_country(user.country)
+                wallet_obj, _ = Wallet.objects.get_or_create(user=user, defaults={"currency": currency})
+            else:
+                wallet_obj = wallet
 
-        return Response(
-            {
+            return {
                 "user": {
                     **UserSerializer(user).data,
                     "wallet": {
-                        "balance": wallet.balance,
-                        "reserved_balance": getattr(wallet, "reserved_balance", 0),
-                        "currency": wallet.currency,
+                        "balance": float(wallet_obj.balance),
+                        "reserved_balance": float(getattr(wallet_obj, "reserved_balance", 0)),
+                        "currency": wallet_obj.currency,
                     },
                 },
                 "summary": build_user_summary(user),
-            },
-            status=status.HTTP_200_OK,
-        )
+            }
+
+        cache_key = user_profile_key(user.id)
+        data = get_or_set_cache(cache_key, fetch_me, timeout=300)
+        return Response(data, status=status.HTTP_200_OK)
 
 class UpdateUserProfileView(generics.UpdateAPIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -292,6 +298,11 @@ class UpdateUserProfileView(generics.UpdateAPIView):
             if wallet.currency != new_currency:
                 wallet.currency = new_currency
                 wallet.save(update_fields=["currency"])
+
+        delete_cache_keys(
+            user_profile_key(user.id),
+            user_summary_key(user.id),
+        )        
 
         return Response(
             {
@@ -432,6 +443,8 @@ def admin_change_password(request):
     user.save()
 
     update_session_auth_hash(request, user)
+
+    delete_cache_keys(admin_profile_key(user.id))
 
     return Response(
         {"message": "Password updated successfully"},

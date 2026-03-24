@@ -12,7 +12,7 @@ from .models import Deposit
 from django.db import transaction
 from django.db.models import F
 from django.contrib.auth import get_user_model
-from common.cache_keys import admin_users_key
+from common.cache_keys import admin_dashboard_stats_key, admin_users_key, user_profile_key, user_summary_key, user_transactions_key
 from common.cache_utils import get_or_set_cache
 from common.cache_keys import admin_deposits_key
 from common.cache_keys import admin_deposits_key, dashboard_stats_key
@@ -50,6 +50,14 @@ def manual_bank_transfer_payment_sent(request):
         method="manual_bank_transfer",
         status="pending",
         provider_payload={"source": "user_clicked_payment_sent"}
+    )
+
+    delete_cache_keys(
+        user_transactions_key(user.id),
+        user_profile_key(user.id),
+        user_summary_key(user.id),
+        admin_deposits_key(),
+        admin_dashboard_stats_key(),
     )
 
     
@@ -99,8 +107,11 @@ def admin_confirm_manual_deposit(request, pk):
         dep.save(update_fields=["status", "confirmed_at"])
 
         delete_cache_keys(
-        admin_deposits_key(),
-        dashboard_stats_key(),
+            admin_deposits_key(),
+            admin_dashboard_stats_key(),
+            user_transactions_key(dep.user.id),
+            user_profile_key(dep.user.id),
+            user_summary_key(dep.user.id),
         )
 
         wallet = dep.user.wallet
@@ -129,6 +140,15 @@ def create_deposit(request):
         method="paystack",
         status="pending"
     )
+
+    delete_cache_keys(
+        user_transactions_key(user.id),
+        user_profile_key(user.id),
+        user_summary_key(user.id),
+        admin_deposits_key(),
+        admin_dashboard_stats_key(),
+    )
+
     headers = {
         "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
         "Content-Type": "application/json"
@@ -163,27 +183,50 @@ def paystack_webhook(request):
         payload = json.loads(request.body.decode("utf-8"))
     except:
         return Response(status=400)
+
     event = payload.get("event")
     data = payload.get("data", {})
     ref = data.get("reference")
+
     if not ref:
         return Response(status=400)
+
     try:
         dep = Deposit.objects.get(provider_reference=ref)
     except Deposit.DoesNotExist:
         return Response(status=404)
+
     if event == "charge.success":
         if dep.status != "paid":
             dep.status = "paid"
             dep.confirmed_at = timezone.now()
             dep.save()
+
             wallet = dep.user.wallet
             wallet.balance += dep.amount
             wallet.save()
+
+            delete_cache_keys(
+                admin_deposits_key(),
+                admin_dashboard_stats_key(),
+                user_transactions_key(dep.user.id),
+                user_profile_key(dep.user.id),
+                user_summary_key(dep.user.id),
+            )
+
     elif event in ["charge.failed", "transfer.failed", "payment.failed"]:
         dep.status = "failed"
         dep.confirmed_at = timezone.now()
         dep.save()
+
+        delete_cache_keys(
+            admin_deposits_key(),
+            admin_dashboard_stats_key(),
+            user_transactions_key(dep.user.id),
+            user_profile_key(dep.user.id),
+            user_summary_key(dep.user.id),
+        )
+
     return Response(status=200)
 
 @api_view(["GET"])
@@ -232,11 +275,26 @@ def deposit_callback(request):
             wallet = dep.user.wallet
             wallet.balance += dep.amount
             wallet.save()
+
+            delete_cache_keys(
+                admin_deposits_key(),
+                admin_dashboard_stats_key(),
+                user_transactions_key(dep.user.id),
+                user_profile_key(dep.user.id),
+                user_summary_key(dep.user.id),
+            )
         return redirect(f"{FRONTEND_URL}/deposit/success?deposit_id={dep.id}&status=paid")
     elif status_text in ["failed", "abandoned", "cancelled"]:
         dep.status = "failed"
         dep.confirmed_at = timezone.now()
         dep.save()
+        delete_cache_keys(
+            admin_deposits_key(),
+            admin_dashboard_stats_key(),
+            user_transactions_key(dep.user.id),
+            user_profile_key(dep.user.id),
+            user_summary_key(dep.user.id),
+        )
         redirect_url = f"{FRONTEND_URL}/deposit/failed?deposit_id={dep.id}&status=failed"
         return redirect(redirect_url)
     else:
@@ -254,7 +312,14 @@ def deposit_status(request, pk):
         if new_status == "failed" and dep.status == "pending":
             dep.status = "failed"
             dep.confirmed_at = timezone.now()
-            dep.save()
+            dep.save() 
+            delete_cache_keys(
+                admin_deposits_key(),
+                admin_dashboard_stats_key(),
+                user_transactions_key(dep.user.id),
+                user_profile_key(dep.user.id),
+                user_summary_key(dep.user.id),
+            )
             return Response(
                 {"message": "Deposit marked as failed due to timeout."},
                 status=200
@@ -276,17 +341,21 @@ def deposit_status(request, pk):
 @permission_classes([permissions.IsAuthenticated])
 def transaction_history(request):
     user = request.user
-    deposits = Deposit.objects.filter(user=user).order_by("-created_at")
-    data = [
-        {
-            "id": str(dep.id),
-            "amount": float(dep.amount),
-            "method": dep.method,
-            "status": dep.status,
-            "created_at": dep.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        for dep in deposits
-    ]
+
+    def fetch_transactions():
+        deposits = Deposit.objects.filter(user=user).order_by("-created_at")
+        return [
+            {
+                "id": str(dep.id),
+                "amount": float(dep.amount),
+                "method": dep.method,
+                "status": dep.status,
+                "created_at": dep.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            for dep in deposits
+        ]
+
+    data = get_or_set_cache(user_transactions_key(user.id), fetch_transactions, timeout=180)
     return Response(data)
 
 @api_view(["GET"])
@@ -353,7 +422,10 @@ def admin_reject_manual_deposit(request, pk):
 
     delete_cache_keys(
         admin_deposits_key(),
-        dashboard_stats_key(),
+        admin_dashboard_stats_key(),
+        user_transactions_key(dep.user.id),
+        user_profile_key(dep.user.id),
+        user_summary_key(dep.user.id),
     )
 
     return Response({"message": "Deposit rejected"}, status=200)

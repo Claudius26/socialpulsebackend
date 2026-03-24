@@ -9,11 +9,12 @@ urlpatterns = [
 ]
 
 from django.urls import path
-from .views import admin_login,admin_profile,admin_update_profile,admin_change_password,cache_test
+from .views import admin_login,admin_profile,admin_update_profile,admin_change_password,cache_test,admin_dashboard_stats
 
 urlpatterns += [
     path("admin/login/", admin_login, name="admin_login"),
     path("admin/profile/", admin_profile, name="admin_profile"),
+    path("admin/dashboard/stats/", admin_dashboard_stats, name="admin_dashboard_stats"),
     path("admin/profile/update/", admin_update_profile, name="admin_update_profile"),
     path("admin/profile/change-password/", admin_change_password, name="admin_change_password"),
     path("cache-test/", cache_test),

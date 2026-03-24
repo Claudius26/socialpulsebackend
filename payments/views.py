@@ -22,7 +22,6 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 User = get_user_model()
 
-
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
 def manual_bank_transfer_payment_sent(request):

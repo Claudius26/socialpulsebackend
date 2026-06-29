@@ -100,7 +100,8 @@ def build_user_summary(user) -> dict:
     )
     num = VirtualNumber.objects.filter(user=user).aggregate(
         spent=Coalesce(Sum("cost", filter=Q(charged=True)), zero),
-        total_count=Count("id"),
+        # "Purchased" = numbers actually kept (exclude cancelled/refunded & failed).
+        total_count=Count("id", filter=~Q(status__in=["Cancelled", "Failed"])),
     )
     bst = BoostRequest.objects.filter(user=user).aggregate(
         spent=Coalesce(Sum("amount", filter=Q(amount__gt=0) & ~Q(status="Failed")), zero),

@@ -55,6 +55,7 @@ def api_credit(request):
         "api_reserved": float(w.api_reserved_balance),
         "api_available": float(api_available(w)),
         "wallet_balance": float(w.balance),
+        "wallet_available": float(w.balance - w.reserved_balance),
         "currency": w.currency,
     })
 

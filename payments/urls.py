@@ -11,6 +11,8 @@ from .views import (
     admin_list_users,
     admin_list_deposits,
     admin_reject_manual_deposit,
+    admin_list_numbers,
+    admin_overview,
 )
 
 urlpatterns = [
@@ -28,4 +30,6 @@ urlpatterns = [
     path("admin/deposits/", admin_list_deposits, name="admin_list_deposits"),
     path("admin/manual/confirm/<uuid:pk>/", admin_confirm_manual_deposit, name="admin_confirm_manual"),
     path("admin/manual/reject/<uuid:pk>/", admin_reject_manual_deposit, name="admin_reject_manual"),
+    path("admin/numbers/", admin_list_numbers, name="admin_list_numbers"),
+    path("admin/overview/", admin_overview, name="admin_overview"),
 ]

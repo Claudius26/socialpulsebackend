@@ -35,7 +35,7 @@ EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
 # Keep tests deterministic / offline.
 DEBUG = False
-VIRTUALNUMBER_PROFIT_MARGIN = 0.65
+VIRTUALNUMBER_PROFIT_MARGIN = 0.40
 
 # The test client speaks plain HTTP; don't force HTTPS redirects in tests.
 SECURE_SSL_REDIRECT = False

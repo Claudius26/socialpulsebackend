@@ -10,7 +10,9 @@ from rest_framework import permissions, status
 from django.views.decorators.csrf import csrf_exempt
 from .models import Deposit
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Sum, Count, Q
+from virtualnumbers.models import VirtualNumber
+from boost.models import BoostRequest
 from django.contrib.auth import get_user_model
 from common.cache_keys import admin_dashboard_stats_key, admin_users_key, user_profile_key, user_summary_key, user_transactions_key,admin_deposits_key
 from common.cache_utils import delete_cache_keys,get_or_set_cache
@@ -429,3 +431,76 @@ def admin_reject_manual_deposit(request, pk):
     )
 
     return Response({"message": "Deposit rejected"}, status=200)
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAdminUser])
+def admin_list_numbers(request):
+    """All virtual numbers across users, with method (API/Normal), status, and SMS state."""
+    qs = VirtualNumber.objects.select_related("user").order_by("-created_at")
+
+    status_f = request.query_params.get("status")
+    source_f = request.query_params.get("source")  # "api" or "wallet"
+    if status_f:
+        qs = qs.filter(status=status_f)
+    if source_f:
+        qs = qs.filter(funding_source=source_f)
+
+    data = [
+        {
+            "id": n.id,
+            "user_email": n.user.email,
+            "user_name": getattr(n.user, "full_name", ""),
+            "phone_number": n.phone_number,
+            "service": n.service,
+            "country": n.country,
+            "status": n.status,
+            "method": "API" if n.funding_source == "api" else "Normal",
+            "sms_received": bool(n.sms_received_at),
+            "charged": n.charged,
+            "cost": float(n.cost),
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+            "cancelled_at": n.cancelled_at.isoformat() if n.cancelled_at else None,
+            "activation_id": n.activation_id,
+        }
+        for n in qs[:500]
+    ]
+    return Response(data, status=200)
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAdminUser])
+def admin_overview(request):
+    """Aggregated platform stats for the admin dashboard."""
+    numbers = VirtualNumber.objects.all()
+    by_status = {row["status"]: row["n"] for row in numbers.values("status").annotate(n=Count("id"))}
+
+    deposits = Deposit.objects.all()
+    boosts = BoostRequest.objects.all()
+
+    return Response({
+        "users": User.objects.count(),
+        "numbers": {
+            "total": numbers.count(),
+            "api": numbers.filter(funding_source="api").count(),
+            "normal": numbers.filter(funding_source="wallet").count(),
+            "sms_received": numbers.filter(sms_received_at__isnull=False).count(),
+            "cancelled": by_status.get("Cancelled", 0),
+            "pending": by_status.get("Pending", 0),
+            "active": by_status.get("Active", 0),
+            "expired": by_status.get("Expired", 0),
+            "revenue": float(numbers.filter(charged=True).aggregate(t=Sum("cost"))["t"] or 0),
+        },
+        "deposits": {
+            "total": deposits.count(),
+            "paid": deposits.filter(status="paid").count(),
+            "pending": deposits.filter(status="pending").count(),
+            "failed": deposits.filter(status="failed").count(),
+            "volume": float(deposits.filter(status="paid").aggregate(t=Sum("amount"))["t"] or 0),
+        },
+        "boosts": {
+            "total": boosts.count(),
+            "processing": boosts.filter(status="Processing").count(),
+            "failed": boosts.filter(status="Failed").count(),
+        },
+    }, status=200)

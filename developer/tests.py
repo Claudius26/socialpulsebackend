@@ -12,7 +12,7 @@ User = get_user_model()
 POOLS = {"status": "success", "data": [
     {"pool": "5", "price": "100", "name": "WhatsApp US", "success_rate": "90"},
 ]}
-PRICE = Decimal("140.00")  # 100 * (1 + 0.40 API margin)
+PRICE = Decimal("120.00")  # 100 * (1 + 0.20 API margin)
 
 
 def make_user(balance="0.00", api="0.00"):
@@ -106,7 +106,7 @@ class ApiPurchaseTests(APITestCase):
         self.assertEqual(r2.status_code, 200)
         self.assertEqual(r2.data["sms"], "123456")
         user.wallet.refresh_from_db()
-        self.assertEqual(user.wallet.api_balance, Decimal("860.00"))      # charged once (1000 - 140)
+        self.assertEqual(user.wallet.api_balance, Decimal("880.00"))      # charged once (1000 - 120)
         self.assertEqual(user.wallet.api_reserved_balance, Decimal("0.00"))
 
     @patch("developer.services.get_otp_provider")

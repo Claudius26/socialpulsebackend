@@ -10,11 +10,11 @@ from .models import VirtualNumber
 
 User = get_user_model()
 
-# price 100 * (1 + 0.65 margin) = 165.00
+# price 100 * (1 + 0.40 in-app margin) = 140.00
 POOLS = {"status": "success", "data": [
     {"pool": "5", "price": "100", "name": "WhatsApp US", "success_rate": "90"},
 ]}
-FINAL_PRICE = Decimal("165.00")
+FINAL_PRICE = Decimal("140.00")
 
 
 def make_user(balance="1000.00", reserved="0.00"):
@@ -55,7 +55,7 @@ class VirtualNumberMoneyTests(APITestCase):
         prov.get_sms.return_value = {"status": "success", "data": {"sms_code": "123456"}}
         mock_provider.return_value = prov
 
-        user = make_user(balance="1000.00", reserved="165.00")
+        user = make_user(balance="1000.00", reserved="140.00")
         vn = VirtualNumber.objects.create(user=user, country="US", service="whatsapp",
                                           phone_number="+1555", activation_id="o1",
                                           cost=FINAL_PRICE, status="Pending", charged=False)
@@ -65,7 +65,7 @@ class VirtualNumberMoneyTests(APITestCase):
 
         user.wallet.refresh_from_db()
         # Hold is consumed: balance and reserved both drop by the cost.
-        self.assertEqual(user.wallet.balance, Decimal("835.00"))
+        self.assertEqual(user.wallet.balance, Decimal("860.00"))
         self.assertEqual(user.wallet.reserved_balance, Decimal("0.00"))
         vn.refresh_from_db()
         self.assertTrue(vn.charged)
@@ -77,7 +77,7 @@ class VirtualNumberMoneyTests(APITestCase):
         prov.cancel.return_value = {"status": "success"}
         mock_provider.return_value = prov
 
-        user = make_user(balance="1000.00", reserved="165.00")
+        user = make_user(balance="1000.00", reserved="140.00")
         vn = VirtualNumber.objects.create(user=user, country="US", service="whatsapp",
                                           phone_number="+1555", activation_id="o1",
                                           cost=FINAL_PRICE, status="Pending", charged=False)

@@ -7,8 +7,8 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
 from users.models import Wallet
-from .models import Deposit
-from . import utils
+from payments.models import Deposit
+from payments import utils
 
 User = get_user_model()
 WEBHOOK_URL = "/api/deposit/webhook/paystack/"
@@ -78,3 +78,29 @@ class PaystackWebhookTests(APITestCase):
         self.assertEqual(r2.status_code, 200)
         user.wallet.refresh_from_db()
         self.assertEqual(user.wallet.balance, Decimal("1500.00"))  # still once
+
+
+class AdminEndpointTests(APITestCase):
+    def test_admin_endpoints_require_staff(self):
+        normal = User.objects.create_user(
+            username="n", email="n@test.com", password="pass12345", full_name="N"
+        )
+        self.client.force_authenticate(user=normal)
+        self.assertIn(self.client.get("/api/deposit/admin/overview/").status_code, (401, 403))
+        self.assertIn(self.client.get("/api/deposit/admin/numbers/").status_code, (401, 403))
+
+    def test_admin_overview_and_numbers(self):
+        admin = User.objects.create_user(
+            username="admin", email="admin@test.com", password="pass12345",
+            full_name="Admin", is_staff=True,
+        )
+        self.client.force_authenticate(user=admin)
+
+        r = self.client.get("/api/deposit/admin/overview/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("numbers", r.data)
+        self.assertIn("deposits", r.data)
+
+        r2 = self.client.get("/api/deposit/admin/numbers/")
+        self.assertEqual(r2.status_code, 200)
+        self.assertIsInstance(r2.data, list)

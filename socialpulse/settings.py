@@ -9,10 +9,10 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-VIRTUALNUMBER_PROFIT_MARGIN = 0.65
+VIRTUALNUMBER_PROFIT_MARGIN = 0.40
 
 # Developer-API purchases get a lower margin than the in-app price (wholesale rate).
-API_PROFIT_MARGIN = 0.40
+API_PROFIT_MARGIN = 0.20
 
 
 

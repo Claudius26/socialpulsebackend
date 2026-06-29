@@ -30,6 +30,10 @@ class Wallet(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="wallet")
     balance = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     reserved_balance = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    # Separate credit pool spent via the public developer API (funded by
+    # transferring from `balance`). Kept apart from the main wallet on purpose.
+    api_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    api_reserved_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     currency = models.CharField(max_length=5, default="NGN")
 
     def __str__(self):

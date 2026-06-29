@@ -21,6 +21,10 @@ class VirtualNumber(models.Model):
     sms_received_at = models.DateTimeField(null=True, blank=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
 
+    # "wallet" (bought in the app) or "api" (bought via the developer API, paid
+    # from api_balance). Tells the charge/release logic which pool to settle.
+    funding_source = models.CharField(max_length=10, default="wallet")
+
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="Pending")
     created_at = models.DateTimeField(auto_now_add=True)
 

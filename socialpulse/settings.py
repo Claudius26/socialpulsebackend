@@ -59,7 +59,8 @@ INSTALLED_APPS = [
     "support",
     "boost",
     "virtualnumbers",
-   
+    "developer",
+
 ]
 
 MIDDLEWARE = [

@@ -109,3 +109,64 @@ def settle_reserved(user, amount) -> Wallet:
     wallet.refresh_from_db(fields=["reserved_balance"])
     invalidate_user_wallet_caches(wallet.user_id)
     return wallet
+
+
+# --------------------------------------------------------------------------- #
+# API credit pool — a separate balance spent via the public developer API.
+# Model: api_available = api_balance - api_reserved_balance.
+#   reserve  -> hold funds while a number is pending (api_reserved += amount)
+#   charge   -> consume the hold when an SMS lands (api_balance -=, api_reserved -=)
+#   release  -> return the hold on cancel (api_reserved -= amount)
+# --------------------------------------------------------------------------- #
+def api_available(wallet) -> Decimal:
+    return (wallet.api_balance or Decimal("0")) - (wallet.api_reserved_balance or Decimal("0"))
+
+
+@transaction.atomic
+def topup_api_credit(user, amount) -> Wallet:
+    """Move funds from the main wallet's available balance into the API credit pool."""
+    amount = to_amount(amount)
+    wallet = Wallet.objects.select_for_update().get(user=user)
+    if (wallet.balance - wallet.reserved_balance) < amount:
+        raise InsufficientFunds("Insufficient wallet balance to fund API credit.")
+    wallet.balance = F("balance") - amount
+    wallet.api_balance = F("api_balance") + amount
+    wallet.save(update_fields=["balance", "api_balance"])
+    wallet.refresh_from_db(fields=["balance", "api_balance"])
+    invalidate_user_wallet_caches(wallet.user_id)
+    return wallet
+
+
+@transaction.atomic
+def reserve_api(user, amount) -> Wallet:
+    amount = to_amount(amount)
+    wallet = Wallet.objects.select_for_update().get(user=user)
+    if api_available(wallet) < amount:
+        raise InsufficientFunds("Insufficient API credit.")
+    wallet.api_reserved_balance = F("api_reserved_balance") + amount
+    wallet.save(update_fields=["api_reserved_balance"])
+    wallet.refresh_from_db(fields=["api_reserved_balance"])
+    return wallet
+
+
+@transaction.atomic
+def charge_api(user, amount) -> Wallet:
+    """Consume an API-credit hold (money leaves the pool)."""
+    amount = to_amount(amount)
+    wallet = Wallet.objects.select_for_update().get(user=user)
+    wallet.api_balance = F("api_balance") - amount
+    wallet.api_reserved_balance = F("api_reserved_balance") - amount
+    wallet.save(update_fields=["api_balance", "api_reserved_balance"])
+    wallet.refresh_from_db(fields=["api_balance", "api_reserved_balance"])
+    return wallet
+
+
+@transaction.atomic
+def release_api(user, amount) -> Wallet:
+    amount = to_amount(amount)
+    wallet = Wallet.objects.select_for_update().get(user=user)
+    hold = min(amount, wallet.api_reserved_balance)
+    wallet.api_reserved_balance = F("api_reserved_balance") - hold
+    wallet.save(update_fields=["api_reserved_balance"])
+    wallet.refresh_from_db(fields=["api_reserved_balance"])
+    return wallet

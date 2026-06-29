@@ -6,6 +6,8 @@ urlpatterns = [
     path("api/support/", include("support.urls")),
     path("api/boost/", include("boost.urls")),
    path("api/virtualnumbers/", include("virtualnumbers.urls")),
+    path("api/developer/", include("developer.urls")),
+    path("api/v1/", include("developer.urls_v1")),
 
 
 ]

@@ -105,7 +105,8 @@ def build_user_summary(user) -> dict:
     )
     bst = BoostRequest.objects.filter(user=user).aggregate(
         spent=Coalesce(Sum("amount", filter=Q(amount__gt=0) & ~Q(status="Failed")), zero),
-        total_count=Count("id"),
+        # Count only successful boosts (exclude failed ones).
+        total_count=Count("id", filter=~Q(status="Failed")),
     )
 
     deposited_total = dep["deposited"]

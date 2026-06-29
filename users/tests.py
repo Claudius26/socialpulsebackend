@@ -95,7 +95,7 @@ class UserSummaryTests(TestCase):
         self.assertEqual(s["totals"]["overall_spending"], 600.0)
         self.assertEqual(s["counts"]["deposits_paid"], 1)
         self.assertEqual(s["counts"]["numbers_purchased"], 2)
-        self.assertEqual(s["counts"]["boost_requests"], 2)
+        self.assertEqual(s["counts"]["boost_requests"], 1)  # Failed boost excluded
 
 
 class AuthTests(TestCase):

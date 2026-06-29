@@ -88,6 +88,31 @@ def convert_currency(amount, from_currency: str, to_currency: str):
     return amount
 
 
+def wallet_payload(wallet, currency_fallback: str = "NGN") -> dict:
+    """The single shape every endpoint uses to describe a user's wallet.
+
+    `balance` / `reserved_balance` are the MAIN wallet (spent on the website).
+    `api_balance` / `api_reserved_balance` are the SEPARATE developer-API pool.
+    The frontend sums balance + api_balance for the sidebar "total" view, while
+    the dashboard shows `balance` (main) alone.
+    """
+    if not wallet:
+        return {
+            "balance": 0.0,
+            "reserved_balance": 0.0,
+            "api_balance": 0.0,
+            "api_reserved_balance": 0.0,
+            "currency": currency_fallback,
+        }
+    return {
+        "balance": float(wallet.balance or 0),
+        "reserved_balance": float(getattr(wallet, "reserved_balance", 0) or 0),
+        "api_balance": float(getattr(wallet, "api_balance", 0) or 0),
+        "api_reserved_balance": float(getattr(wallet, "api_reserved_balance", 0) or 0),
+        "currency": wallet.currency,
+    }
+
+
 def build_user_summary(user) -> dict:
     # One aggregate query per model (3 total) instead of six. Each combines its
     # SUM and COUNT using conditional aggregation, and is backed by composite
@@ -165,11 +190,7 @@ class RegisterManualView(generics.CreateAPIView):
         response_data = {
             "user": {
                 **UserSerializer(user).data,
-                "wallet": {
-                    "balance": wallet.balance if wallet else 0,
-                    "reserved_balance": getattr(wallet, "reserved_balance", 0) if wallet else 0,
-                    "currency": wallet.currency if wallet else currency,
-                },
+                "wallet": wallet_payload(wallet, currency),
             },
             "summary": build_user_summary(user),
             "token": str(refresh.access_token),
@@ -211,11 +232,7 @@ class LoginView(generics.GenericAPIView):
                 {
                     "user": {
                         **UserSerializer(user).data,
-                        "wallet": {
-                            "balance": wallet.balance,
-                            "reserved_balance": getattr(wallet, "reserved_balance", 0),
-                            "currency": wallet.currency,
-                        },
+                        "wallet": wallet_payload(wallet),
                     },
                     "summary": build_user_summary(user),
                     "token": str(refresh.access_token),
@@ -248,11 +265,7 @@ class MeView(generics.GenericAPIView):
             return {
                 "user": {
                     **UserSerializer(user).data,
-                    "wallet": {
-                        "balance": float(wallet_obj.balance),
-                        "reserved_balance": float(getattr(wallet_obj, "reserved_balance", 0)),
-                        "currency": wallet_obj.currency,
-                    },
+                    "wallet": wallet_payload(wallet_obj),
                 },
                 "summary": build_user_summary(user),
             }
@@ -315,11 +328,7 @@ class UpdateUserProfileView(generics.UpdateAPIView):
                 "message": "Profile updated successfully.",
                 "user": {
                     **UserSerializer(user).data,
-                    "wallet": {
-                        "balance": wallet.balance,
-                        "reserved_balance": getattr(wallet, "reserved_balance", 0),
-                        "currency": wallet.currency,
-                    },
+                    "wallet": wallet_payload(wallet),
                 },
                 "summary": build_user_summary(user),
             },

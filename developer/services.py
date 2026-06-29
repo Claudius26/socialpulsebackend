@@ -24,7 +24,8 @@ class ApiError(Exception):
 
 
 def _margin() -> Decimal:
-    return Decimal(str(getattr(settings, "VIRTUALNUMBER_PROFIT_MARGIN", 0.3)))
+    # API uses its own (lower) margin so developers get a wholesale rate.
+    return Decimal(str(getattr(settings, "API_PROFIT_MARGIN", 0.40)))
 
 
 def _price(base) -> Decimal:

@@ -20,6 +20,12 @@ class Deposit(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "status"]),
+            models.Index(fields=["user", "-created_at"]),
+        ]
+
     def __str__(self):
         return f"{self.user} - {self.amount} ({self.status})"
 

@@ -60,5 +60,12 @@ class BoostRequest(models.Model):
     smm_currency = models.CharField(max_length=10, default="USD")
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "status"]),
+            models.Index(fields=["user", "-created_at"]),
+            models.Index(fields=["smm_order_id"]),
+        ]
+
     def __str__(self):
         return f"{self.user} - {self.platform} ({self.service})"

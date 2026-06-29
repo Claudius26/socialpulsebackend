@@ -24,6 +24,14 @@ class VirtualNumber(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="Pending")
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "charged"]),
+            models.Index(fields=["user", "-created_at"]),
+            models.Index(fields=["activation_id"]),
+            models.Index(fields=["status", "charged", "created_at"]),
+        ]
+
     def __str__(self):
         return f"{self.phone_number} ({self.service})"
 

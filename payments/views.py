@@ -16,11 +16,56 @@ from common.cache_keys import admin_dashboard_stats_key, admin_users_key, user_p
 from common.cache_utils import delete_cache_keys,get_or_set_cache
 
 from .services.whatsapp import send_admin_whatsapp
+from .utils import verify_paystack_signature
+from users.services import credit as wallet_credit
 
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 User = get_user_model()
+
+
+def _invalidate_deposit_caches(user_id):
+    delete_cache_keys(
+        admin_deposits_key(),
+        admin_dashboard_stats_key(),
+        user_transactions_key(user_id),
+        user_profile_key(user_id),
+        user_summary_key(user_id),
+    )
+
+
+def credit_deposit(deposit_id):
+    """
+    Credit a deposit's amount to its wallet EXACTLY ONCE.
+
+    The deposit row is locked (select_for_update) and the 'already paid' check
+    happens inside the lock, so concurrent webhook + callback deliveries for the
+    same deposit cannot double-credit. Returns True if it credited now.
+    """
+    with transaction.atomic():
+        dep = Deposit.objects.select_for_update().get(pk=deposit_id)
+        if dep.status == "paid":
+            return False  # idempotent: already credited
+        dep.status = "paid"
+        dep.confirmed_at = timezone.now()
+        dep.save(update_fields=["status", "confirmed_at"])
+        wallet_credit(dep.user, dep.amount)
+        user_id = dep.user_id
+    _invalidate_deposit_caches(user_id)
+    return True
+
+
+def mark_deposit_failed(deposit_id):
+    with transaction.atomic():
+        dep = Deposit.objects.select_for_update().get(pk=deposit_id)
+        if dep.status in ("paid", "failed"):
+            return
+        dep.status = "failed"
+        dep.confirmed_at = timezone.now()
+        dep.save(update_fields=["status", "confirmed_at"])
+        user_id = dep.user_id
+    _invalidate_deposit_caches(user_id)
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
@@ -175,53 +220,36 @@ def create_deposit(request):
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
 def paystack_webhook(request):
+    # 1) Verify the request really came from Paystack (HMAC-SHA512 of the raw body).
+    raw_body = request.body  # must read raw bytes BEFORE parsing
+    signature = request.META.get("HTTP_X_PAYSTACK_SIGNATURE")
+    if not verify_paystack_signature(raw_body, signature):
+        return Response(status=401)
+
     try:
-        payload = json.loads(request.body.decode("utf-8"))
-    except:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
         return Response(status=400)
 
     event = payload.get("event")
     data = payload.get("data", {})
     ref = data.get("reference")
 
+    # Acknowledge (200) for anything we can't act on, so Paystack stops retrying.
     if not ref:
-        return Response(status=400)
+        return Response(status=200)
 
     try:
         dep = Deposit.objects.get(provider_reference=ref)
     except Deposit.DoesNotExist:
-        return Response(status=404)
+        return Response(status=200)
+    except Deposit.MultipleObjectsReturned:
+        dep = Deposit.objects.filter(provider_reference=ref).order_by("-created_at").first()
 
     if event == "charge.success":
-        if dep.status != "paid":
-            dep.status = "paid"
-            dep.confirmed_at = timezone.now()
-            dep.save()
-
-            wallet = dep.user.wallet
-            wallet.balance += dep.amount
-            wallet.save()
-
-            delete_cache_keys(
-                admin_deposits_key(),
-                admin_dashboard_stats_key(),
-                user_transactions_key(dep.user.id),
-                user_profile_key(dep.user.id),
-                user_summary_key(dep.user.id),
-            )
-
+        credit_deposit(dep.id)  # atomic, locked, idempotent
     elif event in ["charge.failed", "transfer.failed", "payment.failed"]:
-        dep.status = "failed"
-        dep.confirmed_at = timezone.now()
-        dep.save()
-
-        delete_cache_keys(
-            admin_deposits_key(),
-            admin_dashboard_stats_key(),
-            user_transactions_key(dep.user.id),
-            user_profile_key(dep.user.id),
-            user_summary_key(dep.user.id),
-        )
+        mark_deposit_failed(dep.id)
 
     return Response(status=200)
 
@@ -263,34 +291,10 @@ def deposit_callback(request):
     status_text = data.get("status") 
     
     if status_text == "success":
-        print('Payment successful.')
-        if dep.status != "paid":
-            dep.status = "paid"
-            dep.confirmed_at = timezone.now()
-            dep.save()
-            wallet = dep.user.wallet
-            wallet.balance += dep.amount
-            wallet.save()
-
-            delete_cache_keys(
-                admin_deposits_key(),
-                admin_dashboard_stats_key(),
-                user_transactions_key(dep.user.id),
-                user_profile_key(dep.user.id),
-                user_summary_key(dep.user.id),
-            )
+        credit_deposit(dep.id)  # atomic, locked, idempotent — shared with the webhook
         return redirect(f"{FRONTEND_URL}/deposit/success?deposit_id={dep.id}&status=paid")
     elif status_text in ["failed", "abandoned", "cancelled"]:
-        dep.status = "failed"
-        dep.confirmed_at = timezone.now()
-        dep.save()
-        delete_cache_keys(
-            admin_deposits_key(),
-            admin_dashboard_stats_key(),
-            user_transactions_key(dep.user.id),
-            user_profile_key(dep.user.id),
-            user_summary_key(dep.user.id),
-        )
+        mark_deposit_failed(dep.id)
         redirect_url = f"{FRONTEND_URL}/deposit/failed?deposit_id={dep.id}&status=failed"
         return redirect(redirect_url)
     else:

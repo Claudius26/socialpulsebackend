@@ -1,62 +1,23 @@
-import os
-import requests
 from decimal import Decimal
 from rest_framework import generics, permissions, status, views
 from rest_framework.response import Response
 from .models import BoostRequest
 from .serializers import BoostRequestSerializer
+from users.services import debit as wallet_debit, credit as wallet_credit, InsufficientFunds
+from common.providers import get_smm_provider, ProviderError
+
+# Single source of truth for the boost profit margin, used for BOTH the quoted
+# price and the actual charge so the user is charged exactly what they were shown.
+PROFIT_MARGIN = Decimal("1.8")
 
 
-SMM_API_KEY = os.getenv("SMM_API_KEY")
-SMM_API_URL = os.getenv("SMM_API_URL", "https://resellersmm.com/api/v2")
+# Thin wrappers kept for readability; the SMM provider handles HTTP + caching.
+def fetch_all_smm_services():
+    return get_smm_provider().list_services()
 
-EXCHANGE_RATE_API_KEY = os.getenv("EXCHANGE_RATE_API_KEY")
 
 def get_live_usd_to_ngn_rate():
-    url = f"https://v6.exchangerate-api.com/v6/{EXCHANGE_RATE_API_KEY}/latest/USD"
-
-    try:
-        response = requests.get(url, timeout=10)
-        data = response.json()
-
-        if response.status_code == 200 and "conversion_rates" in data:
-            ngn_rate = Decimal(str(data["conversion_rates"].get("NGN", "1550.00")))
-            return ngn_rate
-        else:
-            print("Invalid response from ExchangeRate API:", data)
-            return Decimal("1550.00")
-    except Exception as e:
-        print("Error fetching exchange rate:", e)
-        return Decimal("1550.00")
-
-def fetch_all_smm_services():
-    try:
-        payload = {"key": SMM_API_KEY, "action": "services"}
-        response = requests.post(SMM_API_URL, data=payload, timeout=20)
-        return response.json() if response.status_code == 200 else []
-    except Exception as e:
-        print("Error fetching SMM services:", e)
-        return []
-
-def get_service_info(service_name, platform):
-    try:
-        payload = {"key": SMM_API_KEY, "action": "services"}
-        response = requests.post(SMM_API_URL, data=payload, timeout=15)
-        services_data = response.json()
-
-        if not isinstance(services_data, list):
-            return None
-
-        name_match = service_name.lower()
-        platform_match = platform.lower()
-
-        for s in services_data:
-            name = s.get("name", "").lower()
-            if platform_match in name and name_match in name:
-                return s
-    except Exception as e:
-        print("Error in get_service_info:", e)
-    return None
+    return get_smm_provider().usd_to_ngn_rate()
 
 class GetCategoryView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
@@ -79,7 +40,7 @@ class GetCategoryView(generics.GenericAPIView):
             name = s.get("name", "").lower()
             if platform in name and subcategory in name:
                 rate_usd = Decimal(str(s.get("rate", "0")))
-                rate_with_profit_usd = rate_usd * Decimal("1.8")
+                rate_with_profit_usd = rate_usd * PROFIT_MARGIN
                 rate_ngn = rate_with_profit_usd * exchange_rate
 
                 matched_services.append({
@@ -109,9 +70,7 @@ class GetServicePriceView(views.APIView):
             return Response({"error": "service_id and quantity are required"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            payload = {"key": SMM_API_KEY, "action": "services"}
-            response = requests.post(SMM_API_URL, data=payload, timeout=20)
-            services_data = response.json()
+            services_data = fetch_all_smm_services()
             if not isinstance(services_data, list):
                 return Response({"error": "Invalid response from SMM API"}, status=500)
 
@@ -120,7 +79,7 @@ class GetServicePriceView(views.APIView):
                     base_rate = Decimal(str(s["rate"]))
                     qty = Decimal(quantity)
                     total_usd = base_rate * qty / Decimal(1000)
-                    total_with_profit_usd = total_usd * Decimal("1.8")
+                    total_with_profit_usd = total_usd * PROFIT_MARGIN
                     exchange_rate = get_live_usd_to_ngn_rate()
                     total_with_profit_ngn = total_with_profit_usd * exchange_rate
                     return Response({
@@ -147,13 +106,11 @@ class BoostRequestListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         user = self.request.user
-        wallet = user.wallet
         boost_request = serializer.save(user=user)
+        debited = False
 
         try:
-            payload = {"key": SMM_API_KEY, "action": "services"}
-            response = requests.post(SMM_API_URL, data=payload, timeout=20)
-            services_data = response.json()
+            services_data = fetch_all_smm_services()
 
             service_info = None
             service_id = None
@@ -174,57 +131,51 @@ class BoostRequestListCreateView(generics.ListCreateAPIView):
             base_rate = Decimal(str(service_info.get("rate", "0")))
             qty = Decimal(boost_request.quantity)
             total_usd = base_rate * qty / Decimal(1000)
-            total_with_profit_usd = total_usd * Decimal("1.3")
+            total_with_profit_usd = total_usd * PROFIT_MARGIN
             exchange_rate = get_live_usd_to_ngn_rate()
             total_with_profit_ngn = total_with_profit_usd * exchange_rate
             boost_request.amount = round(total_with_profit_ngn, 2)
             boost_request.smm_charge = round(total_with_profit_usd, 4)
             boost_request.save()
 
-            if wallet.balance < boost_request.amount:
+            # Pay-on-success: debit ONCE up front (atomic + row-locked via the
+            # wallet service), then refund if the provider fails to place the order.
+            try:
+                wallet_debit(user, boost_request.amount)
+                debited = True
+            except InsufficientFunds:
                 boost_request.status = "Failed"
                 boost_request.error_message = "Insufficient wallet balance."
                 boost_request.save()
                 return
 
-            wallet.balance -= boost_request.amount
-            wallet.save()
-
-            payload = {
-                "key": SMM_API_KEY,
-                "action": "add",
-                "service": service_id,
-                "link": boost_request.target,
-                "quantity": boost_request.quantity,
-            }
-            response = requests.post(SMM_API_URL, data=payload, timeout=20)
             try:
-                data = response.json()
-            except Exception:
-                data = {"error": response.text}
+                data = get_smm_provider().place_order(
+                    service_id, boost_request.target, boost_request.quantity
+                )
+            except ProviderError as exc:
+                data = {"error": f"Provider request failed: {exc}"}
 
             if "order" in data:
-  
-                if wallet.balance <             boost_request.amount:
-                    boost_request.status = "Failed"
-                    boost_request.error_message = "Insufficient wallet balance."
-                    boost_request.save()
-                    return
-
-                wallet.balance -= boost_request.amount
-                wallet.save()
-
                 boost_request.smm_order_id = data["order"]
                 boost_request.status = "Processing"
                 boost_request.error_message = None
             else:
+                # Provider rejected the order after we debited — refund the user.
+                wallet_credit(user, boost_request.amount)
+                debited = False
                 boost_request.status = "Failed"
                 boost_request.error_message = data.get("error", "Unknown error from SMM provider")
-
 
             boost_request.save()
 
         except Exception as e:
+            # Never leave a user debited for an order that didn't go through.
+            if debited:
+                try:
+                    wallet_credit(user, boost_request.amount)
+                except Exception:
+                    pass
             boost_request.status = "Failed"
             boost_request.error_message = f"Server error: {str(e)}"
             boost_request.save()
@@ -242,11 +193,8 @@ class BoostRequestStatusUpdateView(generics.GenericAPIView):
         except BoostRequest.DoesNotExist:
             return Response({"error": "Order not found"}, status=404)
 
-        payload = {"key": SMM_API_KEY, "action": "status", "order": order_id}
-
         try:
-            response = requests.post(SMM_API_URL, data=payload, timeout=15)
-            data = response.json()
+            data = get_smm_provider().order_status(order_id)
 
             boost_request.smm_charge = Decimal(str(data.get("charge", "0.0")))
             boost_request.smm_start_count = data.get("start_count")

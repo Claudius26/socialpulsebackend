@@ -15,7 +15,33 @@ VIRTUALNUMBER_PROFIT_MARGIN = 0.65
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-default-key")
 DEBUG = os.getenv("DEBUG", "False") == "True"
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
+
+# Fail fast rather than silently shipping the insecure default key in production.
+if not DEBUG and SECRET_KEY == "django-insecure-default-key":
+    raise RuntimeError(
+        "DJANGO_SECRET_KEY must be set in production (the insecure default is in use)."
+    )
+
+if os.getenv("ALLOWED_HOSTS"):
+    ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS").split(",") if h.strip()]
+elif DEBUG:
+    ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
+else:
+    # Non-wildcard default that still covers the Render deployment.
+    ALLOWED_HOSTS = [".onrender.com", "localhost", "127.0.0.1"]
+
+# --- Production security hardening (enforced only when DEBUG is False) ---
+# Render terminates TLS at its proxy and forwards this header.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+if not DEBUG:
+    SECURE_SSL_REDIRECT = os.getenv("SECURE_SSL_REDIRECT", "True") == "True"
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    # HSTS: long max-age but no preload/subdomains (reversible if ever needed).
+    SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "31536000"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = False
+    SECURE_HSTS_PRELOAD = False
 
 
 INSTALLED_APPS = [
@@ -130,6 +156,15 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+    # ScopedRateThrottle only limits views that declare a throttle_scope, so this
+    # is targeted (login/register) and does not throttle the rest of the API.
+    "DEFAULT_THROTTLE_CLASSES": (
+        "rest_framework.throttling.ScopedRateThrottle",
+    ),
+    "DEFAULT_THROTTLE_RATES": {
+        "login": "10/min",
+        "register": "20/hour",
+    },
 }
 
 SIMPLE_JWT = {

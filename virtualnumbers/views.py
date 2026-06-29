@@ -12,6 +12,8 @@ from rest_framework.response import Response
 
 from .models import VirtualNumber, ReceivedSMS
 from .serializers import VirtualNumberSerializer
+from common.cache_utils import invalidate_user_wallet_caches
+from common.providers import get_otp_provider, ProviderError
 
 load_dotenv()
 
@@ -61,24 +63,9 @@ class GetServicesView(generics.GenericAPIView):
         if not service or not country:
             return Response({"error": "service and country are required"}, status=400)
 
-        payload = {"country": country, "service": service}
-
         try:
-            r = requests.get(
-                f"{ZAPOTP_BASE_URL}/services.php",
-                headers=ZAPOTP_HEADERS,
-                params=payload,
-                timeout=20,
-            )
-            r.raise_for_status()
-            try:
-                data = r.json()
-            except ValueError:
-                return Response(
-                    {"error": "ZapOTP returned invalid JSON", "content": r.text},
-                    status=500,
-                )
-        except requests.RequestException as e:
+            data = get_otp_provider().list_pools(country, service)
+        except ProviderError as e:
             return Response({"error": str(e)}, status=500)
 
         if data.get("status") != "success" or "data" not in data:
@@ -120,15 +107,8 @@ class PurchaseNumberView(generics.GenericAPIView):
             return Response({"error": "service, country and pool_id are required"}, status=400)
 
         try:
-            r = requests.get(
-                f"{ZAPOTP_BASE_URL}/services.php",
-                headers=ZAPOTP_HEADERS,
-                params={"country": country, "service": service},
-                timeout=20,
-            )
-            r.raise_for_status()
-            services_data = r.json()
-        except Exception as e:
+            services_data = get_otp_provider().list_pools(country, service)
+        except ProviderError as e:
             return Response({"error": f"Failed to fetch latest pools: {str(e)}"}, status=500)
 
         if services_data.get("status") != "success" or "data" not in services_data:
@@ -150,25 +130,9 @@ class PurchaseNumberView(generics.GenericAPIView):
         if wallet_available(wallet) < final_price:
             return Response({"error": "Insufficient wallet balance"}, status=400)
 
-        payload = {
-            "action": "rent",
-            "service": service,
-            "country": country,
-            "pool": int(pool_id),
-        }
-        if provider in ("global", "usa"):
-            payload["provider"] = provider
-
         try:
-            r2 = requests.post(
-                f"{ZAPOTP_BASE_URL}/orders.php",
-                headers=ZAPOTP_HEADERS,
-                json=payload,
-                timeout=20,
-            )
-            r2.raise_for_status()
-            order_data = r2.json()
-        except Exception as e:
+            order_data = get_otp_provider().rent(country, service, pool_id, provider)
+        except ProviderError as e:
             return Response({"error": f"ZapOTP order failed: {str(e)}"}, status=500)
 
         if order_data.get("status") != "success":
@@ -198,6 +162,7 @@ class PurchaseNumberView(generics.GenericAPIView):
                 cancelled_at=None,
             )
 
+        invalidate_user_wallet_caches(user.id)
         return Response(VirtualNumberSerializer(v).data, status=201)
 
 
@@ -227,17 +192,8 @@ class CancelNumberView(generics.GenericAPIView):
             return Response({"error": "You can only cancel after 5 minutes."}, status=400)
 
         try:
-            r = requests.post(
-                ZAPOTP_CANCEL_URL,
-                headers=ZAPOTP_HEADERS,
-                json={"order_id": str(vn.activation_id)},
-                timeout=20,
-            )
-            try:
-                provider_resp = r.json()
-            except Exception:
-                provider_resp = {"raw": r.text}
-        except Exception as e:
+            provider_resp = get_otp_provider().cancel(vn.activation_id)
+        except ProviderError as e:
             return Response({"error": f"Cancel request failed: {str(e)}"}, status=500)
 
         if isinstance(provider_resp, dict) and provider_resp.get("status") != "success":
@@ -253,6 +209,7 @@ class CancelNumberView(generics.GenericAPIView):
             vn.cancelled_at = timezone.now()
             vn.save()
 
+        invalidate_user_wallet_caches(request.user.id)
         return Response(
             {
                 "success": True,
@@ -280,21 +237,15 @@ class GetSMSView(generics.GenericAPIView):
             return Response({"error": "This number is not active"}, status=400)
 
         try:
-            r = requests.get(
-                f"{ZAPOTP_BASE_URL}/sms.php",
-                headers=ZAPOTP_HEADERS,
-                params={"order_id": str(activation_id)},
-                timeout=20,
-            )
-            r.raise_for_status()
-            data = r.json()
-        except Exception as e:
+            data = get_otp_provider().get_sms(activation_id)
+        except ProviderError as e:
             return Response({"error": str(e)}, status=500)
 
         if data.get("status") != "success":
             return Response({"error": data}, status=400)
 
-        sms = (data.get("data") or {}).get("sms")
+        # ZapOTP returns the received code in `sms_code` (null until it arrives).
+        sms = (data.get("data") or {}).get("sms_code")
         if not sms:
             return Response({"message": "Waiting for SMS..."})
 
@@ -320,6 +271,7 @@ class GetSMSView(generics.GenericAPIView):
                 vn.charged = True
                 vn.save()
 
+        invalidate_user_wallet_caches(request.user.id)
         return Response({"sms": sms})
 
 

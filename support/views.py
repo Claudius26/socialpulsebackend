@@ -1,6 +1,6 @@
 from rest_framework import generics, status
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django.core.mail import send_mail
 from django.conf import settings
 from .models import SupportMessage
@@ -26,7 +26,7 @@ class SupportMessageListCreateView(generics.ListCreateAPIView):
 
 class AdminReplyView(generics.CreateAPIView):
     serializer_class = SupportMessageSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def post(self, request, *args, **kwargs):
         user_id = request.data.get("userId")

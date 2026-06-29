@@ -5,7 +5,8 @@ from decimal import Decimal
 import requests
 from countryinfo import CountryInfo
 from django.contrib.auth import authenticate, get_user_model
-from django.db.models import Sum
+from django.db.models import Sum, Count, Q
+from django.db.models.functions import Coalesce
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -88,34 +89,30 @@ def convert_currency(amount, from_currency: str, to_currency: str):
 
 
 def build_user_summary(user) -> dict:
-    
-    deposited_total = (
-        Deposit.objects.filter(user=user, status="paid")
-        .aggregate(total=Sum("amount"))
-        .get("total")
-        or Decimal("0")
+    # One aggregate query per model (3 total) instead of six. Each combines its
+    # SUM and COUNT using conditional aggregation, and is backed by composite
+    # indexes on (user, status) / (user, charged) so it stays fast as data grows.
+    zero = Decimal("0")
+
+    dep = Deposit.objects.filter(user=user).aggregate(
+        deposited=Coalesce(Sum("amount", filter=Q(status="paid")), zero),
+        paid_count=Count("id", filter=Q(status="paid")),
+    )
+    num = VirtualNumber.objects.filter(user=user).aggregate(
+        spent=Coalesce(Sum("cost", filter=Q(charged=True)), zero),
+        total_count=Count("id"),
+    )
+    bst = BoostRequest.objects.filter(user=user).aggregate(
+        spent=Coalesce(Sum("amount", filter=Q(amount__gt=0) & ~Q(status="Failed")), zero),
+        total_count=Count("id"),
     )
 
-    
-    numbers_spent_total = (
-        VirtualNumber.objects.filter(user=user, charged=True)
-        .aggregate(total=Sum("cost"))
-        .get("total")
-        or Decimal("0")
-    )
-
-    boost_spent_total = (
-        BoostRequest.objects.filter(user=user)
-        .exclude(status="Failed")
-        .filter(amount__gt=0)
-        .aggregate(total=Sum("amount"))
-        .get("total")
-        or Decimal("0")
-    )
-
-    numbers_count = VirtualNumber.objects.filter(user=user).count()
-    paid_deposits_count = Deposit.objects.filter(user=user, status="paid").count()
-    boost_count = BoostRequest.objects.filter(user=user).count()
+    deposited_total = dep["deposited"]
+    paid_deposits_count = dep["paid_count"]
+    numbers_spent_total = num["spent"]
+    numbers_count = num["total_count"]
+    boost_spent_total = bst["spent"]
+    boost_count = bst["total_count"]
 
     overall_spending = numbers_spent_total + boost_spent_total
 
@@ -139,6 +136,7 @@ class RegisterManualView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
+    throttle_scope = "register"
 
     def create(self, request, *args, **kwargs):
         data = request.data.copy()
@@ -180,6 +178,7 @@ class RegisterManualView(generics.CreateAPIView):
 
 class LoginView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
+    throttle_scope = "login"  # rate-limit brute-force attempts (10/min per IP)
 
     def post(self, request):
         try:

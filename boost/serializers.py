@@ -9,7 +9,6 @@ class BoostRequestSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = [
             "user",
-            "order",          
             "status",
             "created_at",
             "amount",
@@ -23,7 +22,7 @@ class BoostRequestSerializer(serializers.ModelSerializer):
         ]
 
     def get_order_id(self, obj):
-        return str(obj.order.id) if obj.order else None
+        return str(obj.smm_order_id) if obj.smm_order_id else None
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

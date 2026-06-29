@@ -1,11 +1,15 @@
 import os
 import requests
+from decimal import Decimal
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
 from virtualnumbers.models import VirtualNumber
+from users.models import Wallet
+from common.cache_utils import invalidate_user_wallet_caches
+from common.providers import get_otp_provider, ProviderError
 
 ZAPOTP_API_KEY = os.getenv("ZAPOTP_API_KEY")
 ZAPOTP_HEADERS = {
@@ -32,26 +36,26 @@ class Command(BaseCommand):
         count = 0
         for vn in qs.iterator():
             try:
-                r = requests.post(
-                    ZAPOTP_CANCEL_URL,
-                    headers=ZAPOTP_HEADERS,
-                    json={"order_id": str(vn.activation_id)},
-                    timeout=20,
-                )
-                try:
-                    provider_resp = r.json()
-                except Exception:
-                    provider_resp = {"raw": r.text}
+                provider_resp = get_otp_provider().cancel(vn.activation_id)
 
                 if isinstance(provider_resp, dict) and provider_resp.get("status") != "success":
                     continue
 
                 with transaction.atomic():
-                    vn.status = "Cancelled"
+                    # Release the held funds back to the user (mirrors
+                    # CancelNumberView) — previously this was never done, so each
+                    # auto-cancel permanently leaked the reservation.
+                    wallet = Wallet.objects.select_for_update().get(user=vn.user)
+                    wallet.reserved_balance = max(
+                        Decimal("0"), wallet.reserved_balance - vn.cost
+                    )
+                    wallet.save(update_fields=["reserved_balance"])
 
+                    vn.status = "Cancelled"
                     vn.cancelled_at = timezone.now()
                     vn.save(update_fields=["status", "cancelled_at"])
 
+                invalidate_user_wallet_caches(vn.user_id)
                 count += 1
 
             except Exception:

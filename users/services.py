@@ -138,6 +138,21 @@ def topup_api_credit(user, amount) -> Wallet:
 
 
 @transaction.atomic
+def withdraw_api_credit(user, amount) -> Wallet:
+    """Move available API credit back into the main wallet balance."""
+    amount = to_amount(amount)
+    wallet = Wallet.objects.select_for_update().get(user=user)
+    if api_available(wallet) < amount:
+        raise InsufficientFunds("Insufficient available API credit.")
+    wallet.api_balance = F("api_balance") - amount
+    wallet.balance = F("balance") + amount
+    wallet.save(update_fields=["api_balance", "balance"])
+    wallet.refresh_from_db(fields=["api_balance", "balance"])
+    invalidate_user_wallet_caches(wallet.user_id)
+    return wallet
+
+
+@transaction.atomic
 def reserve_api(user, amount) -> Wallet:
     amount = to_amount(amount)
     wallet = Wallet.objects.select_for_update().get(user=user)

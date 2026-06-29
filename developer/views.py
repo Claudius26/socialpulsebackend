@@ -9,21 +9,9 @@ from rest_framework.response import Response
 from .models import ApiKey, generate_api_key
 from .authentication import ApiKeyAuthentication
 from . import services
-from users.services import topup_api_credit, api_available, InsufficientFunds
-
-
-def _serialize_key(k, full_key=None):
-    data = {
-        "id": k.id,
-        "name": k.name,
-        "prefix": k.prefix,
-        "is_active": k.is_active,
-        "created_at": k.created_at,
-        "last_used_at": k.last_used_at,
-    }
-    if full_key:
-        data["key"] = full_key  # shown exactly once
-    return data
+from users.services import (
+    topup_api_credit, withdraw_api_credit, api_available, InsufficientFunds,
+)
 
 
 # ======================================================================
@@ -31,27 +19,31 @@ def _serialize_key(k, full_key=None):
 # ======================================================================
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
-def api_keys(request):
+def api_key(request):
+    """
+    GET  -> the user's current API key (full value, so they can view/hide it).
+    POST -> generate or regenerate: a new key replaces the old one.
+    Each user has exactly one active key.
+    """
     if request.method == "GET":
-        keys = ApiKey.objects.filter(user=request.user)
-        return Response([_serialize_key(k) for k in keys])
+        k = ApiKey.objects.filter(user=request.user, is_active=True).order_by("-created_at").first()
+        if not k:
+            return Response({"has_key": False})
+        return Response({
+            "has_key": True,
+            "key": k.key or None,  # None for legacy keys created before storage
+            "prefix": k.prefix,
+            "created_at": k.created_at,
+            "last_used_at": k.last_used_at,
+        })
 
-    name = (request.data.get("name") or "Default").strip()[:100] or "Default"
+    # POST: (re)generate — drop any existing keys, issue a fresh one.
+    ApiKey.objects.filter(user=request.user).delete()
     full_key, prefix, key_hash = generate_api_key()
-    key = ApiKey.objects.create(user=request.user, name=name, prefix=prefix, key_hash=key_hash)
-    return Response(_serialize_key(key, full_key=full_key), status=201)
-
-
-@api_view(["POST", "DELETE"])
-@permission_classes([IsAuthenticated])
-def revoke_api_key(request, pk):
-    try:
-        key = ApiKey.objects.get(pk=pk, user=request.user)
-    except ApiKey.DoesNotExist:
-        return Response({"error": "Key not found"}, status=404)
-    key.is_active = False
-    key.save(update_fields=["is_active"])
-    return Response({"success": True})
+    ApiKey.objects.create(
+        user=request.user, name="Default", prefix=prefix, key_hash=key_hash, key=full_key
+    )
+    return Response({"has_key": True, "key": full_key, "prefix": prefix}, status=201)
 
 
 @api_view(["GET"])
@@ -78,6 +70,26 @@ def topup_api_credit_view(request):
         return Response({"error": "Amount must be greater than zero"}, status=400)
     try:
         w = topup_api_credit(request.user, amount)
+    except InsufficientFunds as e:
+        return Response({"error": str(e)}, status=400)
+    return Response({
+        "api_balance": float(w.api_balance),
+        "wallet_balance": float(w.balance),
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def withdraw_api_credit_view(request):
+    """Move available API credit back to the main wallet."""
+    try:
+        amount = Decimal(str(request.data.get("amount")))
+    except (InvalidOperation, TypeError):
+        return Response({"error": "Invalid amount"}, status=400)
+    if amount <= 0:
+        return Response({"error": "Amount must be greater than zero"}, status=400)
+    try:
+        w = withdraw_api_credit(request.user, amount)
     except InsufficientFunds as e:
         return Response({"error": str(e)}, status=400)
     return Response({

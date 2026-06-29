@@ -26,6 +26,9 @@ class ApiKey(models.Model):
     )
     name = models.CharField(max_length=100, default="Default")
     prefix = models.CharField(max_length=24, db_index=True)
+    # Full key, stored so the owner can view it again in their dashboard
+    # (like ZapOTP). Blank for keys created before this field existed.
+    key = models.CharField(max_length=80, blank=True, default="")
     key_hash = models.CharField(max_length=64, unique=True, db_index=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

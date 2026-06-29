@@ -31,22 +31,28 @@ def make_key(user):
 
 
 class KeyManagementTests(APITestCase):
-    def test_create_list_revoke(self):
+    def test_generate_view_and_regenerate(self):
         user = make_user()
         self.client.force_authenticate(user=user)
 
-        r = self.client.post("/api/developer/keys/", {"name": "Test"}, format="json")
+        # No key yet
+        self.assertFalse(self.client.get("/api/developer/key/").data["has_key"])
+
+        # Generate
+        r = self.client.post("/api/developer/key/")
         self.assertEqual(r.status_code, 201)
-        self.assertTrue(r.data["key"].startswith("sp_live_"))  # full key shown once
-        key_id = r.data["id"]
+        first = r.data["key"]
+        self.assertTrue(first.startswith("sp_live_"))
 
-        r2 = self.client.get("/api/developer/keys/")
-        self.assertEqual(len(r2.data), 1)
-        self.assertNotIn("key", r2.data[0])  # never returns the raw key again
+        # GET returns the same key (so the owner can view it)
+        r2 = self.client.get("/api/developer/key/")
+        self.assertTrue(r2.data["has_key"])
+        self.assertEqual(r2.data["key"], first)
 
-        r3 = self.client.post(f"/api/developer/keys/{key_id}/revoke/")
-        self.assertEqual(r3.status_code, 200)
-        self.assertFalse(ApiKey.objects.get(pk=key_id).is_active)
+        # Regenerate replaces it; exactly one key remains and it changed
+        second = self.client.post("/api/developer/key/").data["key"]
+        self.assertNotEqual(first, second)
+        self.assertEqual(ApiKey.objects.filter(user=user).count(), 1)
 
 
 class CreditTests(APITestCase):
@@ -66,6 +72,16 @@ class CreditTests(APITestCase):
         self.assertEqual(r.status_code, 400)
         user.wallet.refresh_from_db()
         self.assertEqual(user.wallet.api_balance, Decimal("0.00"))
+
+    def test_withdraw_moves_credit_back_to_wallet(self):
+        user = make_user(balance="1000.00")
+        self.client.force_authenticate(user=user)
+        self.client.post("/api/developer/credit/topup/", {"amount": "400"}, format="json")
+        r = self.client.post("/api/developer/credit/withdraw/", {"amount": "150"}, format="json")
+        self.assertEqual(r.status_code, 200)
+        user.wallet.refresh_from_db()
+        self.assertEqual(user.wallet.balance, Decimal("750.00"))      # 600 + 150
+        self.assertEqual(user.wallet.api_balance, Decimal("250.00"))  # 400 - 150
 
 
 class ApiKeyAuthTests(APITestCase):

@@ -14,7 +14,8 @@ class VirtualNumber(models.Model):
     country = models.CharField(max_length=100)
     service = models.CharField(max_length=100)
     phone_number = models.CharField(max_length=50)
-    activation_id = models.CharField(max_length=100)
+    # Provider order id — unique, so the same order can never create two records.
+    activation_id = models.CharField(max_length=100, unique=True)
     cost = models.DecimalField(max_digits=10, decimal_places=2)
 
     charged = models.BooleanField(default=False)
@@ -32,7 +33,6 @@ class VirtualNumber(models.Model):
         indexes = [
             models.Index(fields=["user", "charged"]),
             models.Index(fields=["user", "-created_at"]),
-            models.Index(fields=["activation_id"]),
             models.Index(fields=["status", "charged", "created_at"]),
         ]
 

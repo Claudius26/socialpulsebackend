@@ -12,6 +12,7 @@ from rest_framework.response import Response
 
 from .models import VirtualNumber, ReceivedSMS
 from .serializers import VirtualNumberSerializer
+from users.models import Wallet
 from common.cache_utils import invalidate_user_wallet_caches
 from common.providers import get_otp_provider, ProviderError
 
@@ -188,26 +189,18 @@ class CancelNumberView(generics.GenericAPIView):
         if vn.status in ("Cancelled", "Expired", "Failed"):
             return Response({"error": "This number is not cancellable"}, status=400)
 
-        if minutes_since(vn.created_at) < 5:
-            return Response({"error": "You can only cancel after 5 minutes."}, status=400)
-
-        try:
-            provider_resp = get_otp_provider().cancel(vn.activation_id)
-        except ProviderError as e:
-            return Response({"error": f"Cancel request failed: {str(e)}"}, status=500)
-
-        if isinstance(provider_resp, dict) and provider_resp.get("status") != "success":
-            return Response({"error": provider_resp}, status=400)
-
+        # ZapOTP has no cancel endpoint — cancellation is internal. The number
+        # expires on the provider side; we simply release the user's held funds.
         with transaction.atomic():
-            wallet = request.user.wallet
-            reserved = safe_decimal(getattr(wallet, "reserved_balance", "0"))
-            wallet.reserved_balance = max(Decimal("0"), reserved - safe_decimal(vn.cost))
-            wallet.save()
+            wallet = Wallet.objects.select_for_update().get(user=request.user)
+            wallet.reserved_balance = max(
+                Decimal("0"), safe_decimal(wallet.reserved_balance) - safe_decimal(vn.cost)
+            )
+            wallet.save(update_fields=["reserved_balance"])
 
             vn.status = "Cancelled"
             vn.cancelled_at = timezone.now()
-            vn.save()
+            vn.save(update_fields=["status", "cancelled_at"])
 
         invalidate_user_wallet_caches(request.user.id)
         return Response(
@@ -215,7 +208,6 @@ class CancelNumberView(generics.GenericAPIView):
                 "success": True,
                 "released_amount": float(vn.cost),
                 "activation_id": vn.activation_id,
-                "provider": provider_resp,
             },
             status=200,
         )
@@ -250,26 +242,27 @@ class GetSMSView(generics.GenericAPIView):
             return Response({"message": "Waiting for SMS..."})
 
         with transaction.atomic():
-            ReceivedSMS.objects.create(virtual_number=vn, text=str(sms))
+            locked = VirtualNumber.objects.select_for_update().get(pk=vn.pk)
 
-            if not vn.sms_received_at:
-                vn.sms_received_at = timezone.now()
-                vn.status = "Active"
-                vn.save()
+            # One row per distinct SMS — polling repeatedly won't duplicate it.
+            ReceivedSMS.objects.get_or_create(virtual_number=locked, text=str(sms))
 
-            if not vn.charged:
-                wallet = request.user.wallet
-                cost = safe_decimal(vn.cost)
+            if not locked.sms_received_at:
+                locked.sms_received_at = timezone.now()
+                locked.status = "Active"
+                locked.save(update_fields=["sms_received_at", "status"])
 
-                if wallet_available(wallet) < cost:
-                    return Response({"error": "Insufficient wallet balance to finalize charge"}, status=400)
-
+            if not locked.charged:
+                # Settle the hold reserved at purchase (always covered).
+                wallet = Wallet.objects.select_for_update().get(user=request.user)
+                cost = safe_decimal(locked.cost)
                 wallet.balance = safe_decimal(wallet.balance) - cost
-                wallet.reserved_balance = max(Decimal("0"), safe_decimal(getattr(wallet, "reserved_balance", "0")) - cost)
-                wallet.save()
-
-                vn.charged = True
-                vn.save()
+                wallet.reserved_balance = max(
+                    Decimal("0"), safe_decimal(wallet.reserved_balance) - cost
+                )
+                wallet.save(update_fields=["balance", "reserved_balance"])
+                locked.charged = True
+                locked.save(update_fields=["charged"])
 
         invalidate_user_wallet_caches(request.user.id)
         return Response({"sms": sms})
@@ -280,4 +273,8 @@ class NumberHistoryView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return VirtualNumber.objects.filter(user=self.request.user).order_by("-created_at")
+        return (
+            VirtualNumber.objects.filter(user=self.request.user)
+            .prefetch_related("messages")
+            .order_by("-created_at")
+        )

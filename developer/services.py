@@ -122,7 +122,7 @@ def get_sms(user, activation_id):
 
     with transaction.atomic():
         locked = VirtualNumber.objects.select_for_update().get(pk=vn.pk)
-        ReceivedSMS.objects.create(virtual_number=locked, text=str(sms))
+        ReceivedSMS.objects.get_or_create(virtual_number=locked, text=str(sms))
         if not locked.sms_received_at:
             locked.sms_received_at = timezone.now()
             locked.status = "Active"
@@ -144,13 +144,8 @@ def cancel_number(user, activation_id):
     if vn.status in ("Cancelled", "Expired", "Failed"):
         raise ApiError("This number is not cancellable")
 
-    try:
-        resp = get_otp_provider().cancel(activation_id)
-    except ProviderError as e:
-        raise ApiError(str(e), 502)
-    if isinstance(resp, dict) and resp.get("status") != "success":
-        raise ApiError("Provider did not cancel the number")
-
+    # ZapOTP has no cancel endpoint — cancellation is internal: release the held
+    # API credit and mark it cancelled. The number expires on the provider side.
     with transaction.atomic():
         locked = VirtualNumber.objects.select_for_update().get(pk=vn.pk)
         if locked.status != "Cancelled":

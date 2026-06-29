@@ -1,5 +1,4 @@
 import os
-import requests
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand
@@ -9,20 +8,12 @@ from django.utils import timezone
 from virtualnumbers.models import VirtualNumber
 from users.models import Wallet
 from common.cache_utils import invalidate_user_wallet_caches
-from common.providers import get_otp_provider, ProviderError
-
-ZAPOTP_API_KEY = os.getenv("ZAPOTP_API_KEY")
-ZAPOTP_HEADERS = {
-    "Authorization": f"Bearer {ZAPOTP_API_KEY}",
-    "Content-Type": "application/json",
-}
-ZAPOTP_CANCEL_URL = "https://www.zapotp.com/account/smspool/cancel_order.php"
 
 AUTO_CANCEL_MINUTES = int(os.getenv("VIRTUALNUMBER_AUTO_CANCEL_MINUTES", "20"))
 
 
 class Command(BaseCommand):
-    help = "Auto-cancel ZapOTP orders that have no SMS after X minutes."
+    help = "Auto-cancel numbers that received no SMS after X minutes, releasing the held funds."
 
     def handle(self, *args, **options):
         cutoff = timezone.now() - timezone.timedelta(minutes=AUTO_CANCEL_MINUTES)
@@ -36,20 +27,20 @@ class Command(BaseCommand):
         count = 0
         for vn in qs.iterator():
             try:
-                provider_resp = get_otp_provider().cancel(vn.activation_id)
-
-                if isinstance(provider_resp, dict) and provider_resp.get("status") != "success":
-                    continue
-
+                # ZapOTP has no cancel endpoint; the number expires on their side.
+                # We just release the user's hold (wallet or API credit) and mark it.
                 with transaction.atomic():
-                    # Release the held funds back to the user (mirrors
-                    # CancelNumberView) — previously this was never done, so each
-                    # auto-cancel permanently leaked the reservation.
                     wallet = Wallet.objects.select_for_update().get(user=vn.user)
-                    wallet.reserved_balance = max(
-                        Decimal("0"), wallet.reserved_balance - vn.cost
-                    )
-                    wallet.save(update_fields=["reserved_balance"])
+                    if vn.funding_source == "api":
+                        wallet.api_reserved_balance = max(
+                            Decimal("0"), wallet.api_reserved_balance - vn.cost
+                        )
+                        wallet.save(update_fields=["api_reserved_balance"])
+                    else:
+                        wallet.reserved_balance = max(
+                            Decimal("0"), wallet.reserved_balance - vn.cost
+                        )
+                        wallet.save(update_fields=["reserved_balance"])
 
                     vn.status = "Cancelled"
                     vn.cancelled_at = timezone.now()
@@ -57,7 +48,6 @@ class Command(BaseCommand):
 
                 invalidate_user_wallet_caches(vn.user_id)
                 count += 1
-
             except Exception:
                 continue
 

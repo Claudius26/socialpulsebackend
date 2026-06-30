@@ -17,12 +17,22 @@ from django.utils import timezone
 
 from cardpulse.services import get_rate_config, record_ledger, record_audit
 from common.providers import get_payout_provider, ProviderError
+from common.fx import convert, FxError
+from common.currencies import quantize
 from users.models import Wallet
 
 from .models import Withdrawal
 
-WITHDRAWAL_MIN = Decimal("1000")
+# Paystack settles in NGN. Wallets may be in another currency, so deposits and
+# withdrawals convert to/from NGN at this boundary (NGN wallets: identity).
+WITHDRAWAL_MIN_NGN = Decimal("1000")
+WITHDRAWAL_MIN = WITHDRAWAL_MIN_NGN  # back-compat alias
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
+
+
+def _wallet_currency(user):
+    w = getattr(user, "wallet", None)
+    return (getattr(w, "currency", None) or "NGN") if w else "NGN"
 
 
 class BankingError(Exception):
@@ -88,7 +98,8 @@ def _refund(withdrawal, reason="Withdrawal refund"):
         wallet.refresh_from_db(fields=["balance"])
         wd.refunded = True
         wd.save(update_fields=["refunded"])
-        record_ledger(wd.user, "credit", "reversal", wd.amount, balance_after=wallet.balance,
+        record_ledger(wd.user, "credit", "reversal", wd.amount, currency=wd.currency,
+                      balance_after=wallet.balance,
                       reference=f"withdrawal:{wd.id}", description=reason)
 
 
@@ -99,9 +110,16 @@ def initiate_withdrawal(user, amount, bank_code, account_number, pin, *,
     if not user.check_transaction_pin(pin):
         raise BankingError("Incorrect transaction PIN.", status=403)
 
-    amount = _amount(amount)
-    if amount < WITHDRAWAL_MIN:
-        raise BankingError(f"Minimum withdrawal is ₦{WITHDRAWAL_MIN}.")
+    amount = _amount(amount)  # in the user's wallet currency
+    wcur = _wallet_currency(user)
+    try:
+        amount_ngn = convert(amount, wcur, "NGN")  # what Paystack will transfer
+    except FxError:
+        raise BankingError("This service is temporarily unavailable. Please try again later.",
+                           status=503)
+    if amount_ngn < WITHDRAWAL_MIN_NGN:
+        min_wcur = quantize(convert(WITHDRAWAL_MIN_NGN, "NGN", wcur), wcur) if wcur != "NGN" else WITHDRAWAL_MIN_NGN
+        raise BankingError(f"Minimum withdrawal is {min_wcur} {wcur}.")
 
     key = (idempotency_key or "").strip() or uuid.uuid4().hex
     existing = Withdrawal.objects.filter(idempotency_key=key).first()
@@ -133,14 +151,17 @@ def initiate_withdrawal(user, amount, bank_code, account_number, pin, *,
             wallet.save(update_fields=["balance"])
             wallet.refresh_from_db(fields=["balance"])
 
-            review = threshold > 0 and amount >= threshold
+            # The manual-review threshold is configured in NGN — compare the NGN payout.
+            review = threshold > 0 and amount_ngn >= threshold
             wd = Withdrawal.objects.create(
-                user=user, amount=amount, bank_code=bank_code, account_number=account_number,
+                user=user, amount=amount, currency=wcur, amount_ngn=amount_ngn,
+                bank_code=bank_code, account_number=account_number,
                 account_name=account_name, recipient_code=recipient_code, reference=reference,
                 idempotency_key=key,
                 status=Withdrawal.STATUS_PENDING_REVIEW if review else Withdrawal.STATUS_PROCESSING,
             )
-            record_ledger(user, "debit", "withdrawal", amount, balance_after=wallet.balance,
+            record_ledger(user, "debit", "withdrawal", amount, currency=wcur,
+                          balance_after=wallet.balance,
                           reference=f"withdrawal:{wd.id}", description=f"To {bank_code}/{account_number}")
     except BankingError:
         raise
@@ -156,9 +177,11 @@ def initiate_withdrawal(user, amount, bank_code, account_number, pin, *,
 
 def _send_transfer(wd):
     """Call Paystack to actually move the money. Refund on hard failure."""
+    # Paystack transfers in NGN — use the converted NGN amount, not the wallet amount.
+    transfer_ngn = wd.amount_ngn if wd.amount_ngn and wd.amount_ngn > 0 else wd.amount
     try:
         resp = get_payout_provider().initiate_transfer(
-            wd.recipient_code, wd.amount, wd.reference, reason="CardPulse withdrawal"
+            wd.recipient_code, transfer_ngn, wd.reference, reason="CardPulse withdrawal"
         )
     except ProviderError as exc:
         wd.status = Withdrawal.STATUS_FAILED
@@ -248,16 +271,25 @@ def reject_withdrawal(admin, withdrawal_id, reason=""):
 def create_deposit(user, amount, *, callback_url=None):
     from payments.models import Deposit
 
-    amount = _amount(amount)
-    if amount < WITHDRAWAL_MIN:
-        raise BankingError(f"Minimum deposit is ₦{WITHDRAWAL_MIN}.")
+    amount = _amount(amount)  # in the user's wallet currency
+    wcur = _wallet_currency(user)
+    try:
+        charge_ngn = convert(amount, wcur, "NGN")
+    except FxError:
+        raise BankingError("This service is temporarily unavailable. Please try again later.",
+                           status=503)
+    if charge_ngn < WITHDRAWAL_MIN_NGN:
+        min_wcur = quantize(convert(WITHDRAWAL_MIN_NGN, "NGN", wcur), wcur) if wcur != "NGN" else WITHDRAWAL_MIN_NGN
+        raise BankingError(f"Minimum deposit is {min_wcur} {wcur}.")
 
-    deposit = Deposit.objects.create(user=user, amount=amount, currency="NGN",
-                                     method="paystack", status="pending")
+    deposit = Deposit.objects.create(user=user, amount=amount, currency=wcur,
+                                     method="paystack", status="pending",
+                                     provider_payload={"charge_ngn": str(charge_ngn)})
     headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}", "Content-Type": "application/json"}
     body = {
         "email": user.email,
-        "amount": int(amount * 100),
+        "amount": int(charge_ngn * 100),
+        "currency": "NGN",
         "metadata": {"deposit_id": str(deposit.id), "user_id": str(user.id), "app": "cardpulse"},
     }
     if callback_url:
@@ -276,7 +308,7 @@ def create_deposit(user, amount, *, callback_url=None):
         deposit.save(update_fields=["status"])
         raise BankingError(resp.get("message", "Could not start payment."), status=502)
 
-    deposit.provider_payload = resp
+    deposit.provider_payload = {**(deposit.provider_payload or {}), "init": resp}
     deposit.provider_reference = resp["data"]["reference"]
     deposit.save(update_fields=["provider_payload", "provider_reference"])
     return {

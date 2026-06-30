@@ -80,6 +80,38 @@ class PaystackWebhookTests(APITestCase):
         self.assertEqual(user.wallet.balance, Decimal("1500.00"))  # still once
 
 
+class WebDepositCurrencyTests(APITestCase):
+    """A non-NGN web user funds in their own currency; Paystack is charged the
+    NGN equivalent and the wallet is credited in its own currency on success."""
+
+    def _ghs_user(self):
+        from unittest.mock import patch  # noqa
+        u = User.objects.create_user(username="gd", email="gd@test.com",
+                                     password="pass12345", full_name="GD")
+        Wallet.objects.create(user=u, balance=Decimal("0.00"), currency="GHS")
+        return u
+
+    def test_create_deposit_charges_ngn_equivalent(self):
+        from unittest.mock import patch, MagicMock
+        user = self._ghs_user()
+        self.client.force_authenticate(user=user)
+        fake = MagicMock()
+        fake.json.return_value = {"status": True, "data": {
+            "authorization_url": "http://pay", "reference": "wref_1"}}
+        # GHS->NGN = 20  => 500 GHS = 10,000 NGN = 1,000,000 kobo
+        with patch("payments.views.convert", return_value=Decimal("10000.00")), \
+             patch("payments.views.requests.post", return_value=fake) as mpost:
+            res = self.client.post("/api/deposit/create/", {"amount": "500"}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        body = mpost.call_args.kwargs["json"]
+        self.assertEqual(body["amount"], 1000000)
+        self.assertEqual(body["currency"], "NGN")
+        dep = Deposit.objects.get(user=user)
+        self.assertEqual(dep.amount, Decimal("500.00"))   # credited in GHS on success
+        self.assertEqual(dep.currency, "GHS")
+        self.assertEqual(dep.provider_payload.get("charge_ngn"), "10000.00")
+
+
 class AdminEndpointTests(APITestCase):
     def test_admin_endpoints_require_staff(self):
         normal = User.objects.create_user(

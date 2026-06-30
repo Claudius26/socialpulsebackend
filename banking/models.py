@@ -23,8 +23,11 @@ class Withdrawal(models.Model):
     ]
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="withdrawals")
-    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)       # debited from wallet, in `currency`
     currency = models.CharField(max_length=5, default="NGN")
+    # The NGN actually transferred via Paystack (Paystack settles in NGN). For
+    # NGN wallets this equals `amount`; for others it's the converted payout.
+    amount_ngn = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
     bank_code = models.CharField(max_length=12)
     account_number = models.CharField(max_length=20)

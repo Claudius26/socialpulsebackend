@@ -20,6 +20,19 @@ from common.cache_utils import delete_cache_keys,get_or_set_cache
 from .services.whatsapp import send_admin_whatsapp
 from .utils import verify_paystack_signature
 from users.services import credit as wallet_credit
+from common.fx import convert, FxError
+from common.currencies import quantize
+
+# Paystack settles in NGN, so we always CHARGE in NGN — but the user funds in
+# their own wallet currency. We convert their amount to the NGN to charge, and
+# credit their wallet in their own currency. (NGN users: convert is identity.)
+DEPOSIT_MIN_NGN = Decimal("1000")
+SERVICE_UNAVAILABLE = "This service is temporarily unavailable. Please try again later."
+
+
+def _wallet_currency(user):
+    w = getattr(user, "wallet", None)
+    return (getattr(w, "currency", None) or "NGN") if w else "NGN"
 
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
@@ -174,14 +187,27 @@ def create_deposit(request):
         dec_amount = Decimal(str(amount))
     except:
         return Response({"error": "Invalid amount"}, status=status.HTTP_400_BAD_REQUEST)
-    if dec_amount < Decimal("1000"):
-        return Response({"error": "Minimum deposit is ₦1000"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # The amount is in the user's wallet currency. Convert it to the NGN we'll
+    # actually charge through Paystack.
+    wcur = _wallet_currency(user)
+    try:
+        charge_ngn = convert(dec_amount, wcur, "NGN")
+    except FxError:
+        return Response({"error": SERVICE_UNAVAILABLE}, status=503)
+
+    if charge_ngn < DEPOSIT_MIN_NGN:
+        min_wcur = quantize(convert(DEPOSIT_MIN_NGN, "NGN", wcur), wcur) if wcur != "NGN" else DEPOSIT_MIN_NGN
+        return Response({"error": f"Minimum deposit is {min_wcur} {wcur}"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
     deposit = Deposit.objects.create(
         user=user,
-        amount=dec_amount,
-        currency="NGN",
+        amount=dec_amount,          # credited to the wallet in ITS currency
+        currency=wcur,
         method="paystack",
-        status="pending"
+        status="pending",
+        provider_payload={"charge_ngn": str(charge_ngn)},
     )
 
     delete_cache_keys(
@@ -198,7 +224,8 @@ def create_deposit(request):
     }
     data = {
         "email": user.email,
-        "amount": int(dec_amount * 100),
+        "amount": int(charge_ngn * 100),
+        "currency": "NGN",
         "callback_url": f"{FRONTEND_URL}/deposit/callback?deposit_id={deposit.id}",
         "metadata": {"deposit_id": str(deposit.id), "user_id": str(user.id)}
     }
@@ -208,7 +235,7 @@ def create_deposit(request):
         deposit.status = "failed"
         deposit.save()
         return Response({"error": resp.get("message", "Failed to initialize payment")}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    deposit.provider_payload = resp
+    deposit.provider_payload = {**(deposit.provider_payload or {}), "init": resp}
     deposit.provider_reference = resp["data"]["reference"]
     deposit.save()
     return Response({

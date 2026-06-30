@@ -43,13 +43,17 @@ logger = logging.getLogger(__name__)
 
 
 def get_currency_from_country(country_name: str) -> str:
-   
+    # Use the explicit supported-country map (reliable + correct decimals),
+    # falling back to CountryInfo for anything outside our list.
+    from common.currencies import currency_for_country, COUNTRIES
+    known = {c["name"].lower() for c in COUNTRIES} | {c["code"].lower() for c in COUNTRIES}
+    if country_name and str(country_name).strip().lower() in known:
+        return currency_for_country(country_name)
     try:
         if not country_name:
             return "NGN"
-        country = CountryInfo(country_name)
-        currencies = country.currencies()
-        if currencies and len(currencies) > 0:
+        currencies = CountryInfo(country_name).currencies()
+        if currencies:
             return currencies[0]
     except Exception:
         pass

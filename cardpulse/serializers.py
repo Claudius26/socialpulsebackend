@@ -11,6 +11,7 @@ class CardPulseRegisterSerializer(serializers.Serializer):
     first_name = serializers.CharField(max_length=60)
     last_name = serializers.CharField(max_length=60)
     email = serializers.EmailField()
+    country = serializers.CharField(max_length=60, required=False, allow_blank=True)
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
     password2 = serializers.CharField(write_only=True, required=True)
 
@@ -39,6 +40,7 @@ class CardPulseRegisterSerializer(serializers.Serializer):
             first_name=first,
             last_name=last,
             full_name=f"{first} {last}".strip(),
+            country=(validated_data.get("country") or "").strip() or None,
             tag=tag,
             email_verified=False,
         )

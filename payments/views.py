@@ -237,6 +237,12 @@ def paystack_webhook(request):
     data = payload.get("data", {})
     ref = data.get("reference")
 
+    # Transfer events belong to CardPulse withdrawals, not deposits.
+    if isinstance(event, str) and event.startswith("transfer."):
+        from banking.services import handle_transfer_event
+        handle_transfer_event(event, data)
+        return Response(status=200)
+
     # Acknowledge (200) for anything we can't act on, so Paystack stops retrying.
     if not ref:
         return Response(status=200)

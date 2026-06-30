@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     "cardpulse",
     "giftcards",
     "p2p",
+    "banking",
 
 ]
 

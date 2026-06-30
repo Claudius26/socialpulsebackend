@@ -289,11 +289,67 @@ class ReloadlyGiftcardProvider(BaseGiftcardProvider):
 
 
 # --------------------------------------------------------------------------- #
+# Bank-payout providers (CardPulse withdrawals)
+# --------------------------------------------------------------------------- #
+class BasePayoutProvider(BaseHTTPProvider):
+    def list_banks(self) -> list:
+        raise NotImplementedError
+
+    def resolve_account(self, account_number, bank_code) -> dict:
+        raise NotImplementedError
+
+    def create_recipient(self, name, account_number, bank_code) -> dict:
+        raise NotImplementedError
+
+    def initiate_transfer(self, recipient_code, amount, reference, reason="") -> dict:
+        raise NotImplementedError
+
+
+class PaystackPayoutProvider(BasePayoutProvider):
+    """Paystack Transfers — pay out NGN to a Nigerian bank account.
+
+    Amounts are in NAIRA at this boundary; we convert to kobo for Paystack.
+    """
+    BASE = "https://api.paystack.co"
+
+    @property
+    def _headers(self):
+        return {
+            "Authorization": f"Bearer {os.getenv('PAYSTACK_SECRET_KEY')}",
+            "Content-Type": "application/json",
+        }
+
+    def list_banks(self) -> list:
+        data = self._get(f"{self.BASE}/bank", headers=self._headers, params={"currency": "NGN"})
+        return (data or {}).get("data", []) if isinstance(data, dict) else []
+
+    def resolve_account(self, account_number, bank_code) -> dict:
+        return self._get(
+            f"{self.BASE}/bank/resolve", headers=self._headers,
+            params={"account_number": account_number, "bank_code": bank_code},
+        )
+
+    def create_recipient(self, name, account_number, bank_code) -> dict:
+        return self._post(f"{self.BASE}/transferrecipient", headers=self._headers, json={
+            "type": "nuban", "name": name, "account_number": account_number,
+            "bank_code": bank_code, "currency": "NGN",
+        })
+
+    def initiate_transfer(self, recipient_code, amount, reference, reason="") -> dict:
+        return self._post(f"{self.BASE}/transfer", headers=self._headers, json={
+            "source": "balance", "amount": int(Decimal(str(amount)) * 100),
+            "recipient": recipient_code, "reference": reference,
+            "reason": reason or "CardPulse withdrawal",
+        })
+
+
+# --------------------------------------------------------------------------- #
 # Registry — call-sites ask for the active provider by domain.
 # --------------------------------------------------------------------------- #
 SMM_PROVIDERS = {"resellersmm": ResellerSmmProvider}
 OTP_PROVIDERS = {"zapotp": ZapOtpProvider}
 GIFTCARD_PROVIDERS = {"reloadly": ReloadlyGiftcardProvider}
+PAYOUT_PROVIDERS = {"paystack": PaystackPayoutProvider}
 
 
 def get_smm_provider(name="resellersmm") -> BaseSMMProvider:
@@ -306,3 +362,7 @@ def get_otp_provider(name="zapotp") -> BaseOTPProvider:
 
 def get_giftcard_provider(name="reloadly") -> BaseGiftcardProvider:
     return GIFTCARD_PROVIDERS[name]()
+
+
+def get_payout_provider(name="paystack") -> BasePayoutProvider:
+    return PAYOUT_PROVIDERS[name]()

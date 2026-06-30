@@ -7,7 +7,13 @@ from django.urls import reverse
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from common.providers import ProviderError
+from cardpulse.crypto import decrypt
+from cardpulse.models import LedgerEntry
+from users.services import get_or_create_wallet
+
 from . import services
+from .models import GiftCard, GiftCardOrder
 
 User = get_user_model()
 
@@ -16,7 +22,9 @@ FIXED_PRODUCT = {
     "productName": "Amazon US",
     "denominationType": "FIXED",
     "recipientCurrencyCode": "USD",
+    "senderCurrencyCode": "USD",
     "fixedRecipientDenominations": [10, 25, 50],
+    "fixedRecipientToSenderDenominationsMap": {"10": 10, "25": 25, "50": 50},
     "logoUrls": ["http://logo/amazon.png"],
     "brand": {"brandName": "Amazon"},
     "country": {"isoName": "US", "name": "United States", "flagUrl": "http://flag/us.png"},
@@ -134,3 +142,143 @@ class CatalogEndpointTests(APITestCase):
         )
         self.assertEqual(res.status_code, 200, res.data)
         self.assertEqual(res.data["countries"][0]["iso"], "US")
+
+
+class FakeBuyProvider:
+    def get_product(self, product_id):
+        return FIXED_PRODUCT
+
+    def order(self, product_id, unit_price, quantity=1, recipient_email=None, custom_identifier=None):
+        return {"transactionId": 999, "status": "SUCCESSFUL", "amount": unit_price}
+
+    def redeem_code(self, transaction_id):
+        return [{"cardNumber": "1234-5678-9012", "pinCode": "4321"}]
+
+
+class FailingBuyProvider(FakeBuyProvider):
+    def order(self, *a, **k):
+        raise ProviderError("provider down")
+
+
+def fund(user, amount):
+    w = get_or_create_wallet(user)
+    w.balance = Decimal(str(amount))
+    w.save(update_fields=["balance"])
+    return w
+
+
+class PurchaseTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = make_cardpulse_user("buyer@cardpulse.test", tag="buyer")
+        fund(self.user, 50000)
+
+    @patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600"))
+    @patch("common.providers.get_giftcard_provider", return_value=FakeBuyProvider())
+    def test_successful_purchase(self, _prov, _fx):
+        res = self.client.post(reverse("giftcards:buy"), {
+            "product_id": 1, "face_value": "10", "idempotency_key": "key-success",
+        }, format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["status"], "completed")
+        card = GiftCard.objects.get(owner=self.user)
+        self.assertEqual(card.status, GiftCard.STATUS_OWNED)
+        self.assertTrue(card.redeemable)
+        # 10 USD * 1600 = 16000 debited -> 34000 left
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal("34000.00"))
+        self.assertTrue(LedgerEntry.objects.filter(
+            user=self.user, kind="giftcard_purchase", direction="debit").exists())
+
+    @patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600"))
+    @patch("common.providers.get_giftcard_provider", return_value=FakeBuyProvider())
+    def test_insufficient_funds(self, _prov, _fx):
+        fund(self.user, 0)
+        res = self.client.post(reverse("giftcards:buy"), {
+            "product_id": 1, "face_value": "10", "idempotency_key": "key-poor",
+        }, format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 402)
+        self.assertFalse(GiftCard.objects.filter(owner=self.user).exists())
+
+    @patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600"))
+    @patch("common.providers.get_giftcard_provider", return_value=FakeBuyProvider())
+    def test_idempotency_does_not_double_charge(self, _prov, _fx):
+        payload = {"product_id": 1, "face_value": "10", "idempotency_key": "same-key"}
+        r1 = self.client.post(reverse("giftcards:buy"), payload, format="json",
+                              HTTP_AUTHORIZATION=auth(self.user))
+        r2 = self.client.post(reverse("giftcards:buy"), payload, format="json",
+                              HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(r1.data["id"], r2.data["id"])
+        self.assertEqual(GiftCardOrder.objects.filter(idempotency_key="same-key").count(), 1)
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal("34000.00"))  # charged once
+
+    @patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600"))
+    @patch("common.providers.get_giftcard_provider", return_value=FailingBuyProvider())
+    def test_provider_failure_refunds(self, _prov, _fx):
+        res = self.client.post(reverse("giftcards:buy"), {
+            "product_id": 1, "face_value": "10", "idempotency_key": "key-fail",
+        }, format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 402)
+        self.assertEqual(res.data["status"], "failed")
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal("50000.00"))  # fully refunded
+        self.assertTrue(LedgerEntry.objects.filter(
+            user=self.user, kind="reversal", direction="credit").exists())
+
+    @patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600"))
+    @patch("common.providers.get_giftcard_provider", return_value=FakeBuyProvider())
+    def test_code_encrypted_at_rest(self, _prov, _fx):
+        self.client.post(reverse("giftcards:buy"), {
+            "product_id": 1, "face_value": "10", "idempotency_key": "key-enc",
+        }, format="json", HTTP_AUTHORIZATION=auth(self.user))
+        card = GiftCard.objects.get(owner=self.user)
+        self.assertNotIn("1234-5678-9012", card.code_encrypted)
+        self.assertEqual(decrypt(card.code_encrypted), "1234-5678-9012")
+
+    @patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600"))
+    @patch("common.providers.get_giftcard_provider", return_value=FakeBuyProvider())
+    def test_list_never_exposes_code(self, _prov, _fx):
+        self.client.post(reverse("giftcards:buy"), {
+            "product_id": 1, "face_value": "10", "idempotency_key": "key-list",
+        }, format="json", HTTP_AUTHORIZATION=auth(self.user))
+        res = self.client.get(reverse("giftcards:mine"), HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 200)
+        self.assertNotIn("code", res.data[0])
+        self.assertNotIn("pin", res.data[0])
+        self.assertNotIn("code_encrypted", res.data[0])
+
+
+class RevealTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = make_cardpulse_user("rev@cardpulse.test", tag="revealer")
+        self.user.set_transaction_pin("1234")
+        self.user.save()
+        fund(self.user, 50000)
+
+    def _buy(self):
+        with patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600")), \
+             patch("common.providers.get_giftcard_provider", return_value=FakeBuyProvider()):
+            self.client.post(reverse("giftcards:buy"), {
+                "product_id": 1, "face_value": "10", "idempotency_key": "rev-key",
+            }, format="json", HTTP_AUTHORIZATION=auth(self.user))
+        return GiftCard.objects.get(owner=self.user)
+
+    def test_reveal_with_correct_pin(self):
+        card = self._buy()
+        res = self.client.post(reverse("giftcards:reveal", args=[card.id]), {"pin": "1234"},
+                               format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["code"], "1234-5678-9012")
+        card.refresh_from_db()
+        self.assertEqual(card.status, GiftCard.STATUS_REVEALED)
+        self.assertFalse(card.redeemable)
+
+    def test_reveal_wrong_pin_rejected(self):
+        card = self._buy()
+        res = self.client.post(reverse("giftcards:reveal", args=[card.id]), {"pin": "0000"},
+                               format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 403)
+        card.refresh_from_db()
+        self.assertTrue(card.redeemable)  # unchanged

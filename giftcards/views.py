@@ -1,13 +1,19 @@
 import logging
+import uuid
 
 from rest_framework import generics
 from rest_framework.response import Response
 
 from cardpulse.permissions import IsCardPulseUser
+from cardpulse.services import client_ip
 from common.providers import get_giftcard_provider, ProviderError
 from common.cache_utils import get_or_set_cache
 
 from . import services
+from .models import GiftCard, GiftCardOrder
+from .serializers import (
+    GiftCardSerializer, GiftCardOrderSerializer, PurchaseSerializer, RevealSerializer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,3 +77,68 @@ class GiftcardCountriesView(generics.GenericAPIView):
 
         data = get_or_set_cache("cardpulse:giftcard:countries", fetch, timeout=3600)
         return Response({"countries": data}, status=200)
+
+
+class PurchaseGiftcardView(generics.GenericAPIView):
+    """Buy (mint) a giftcard, charged to the CardPulse cash wallet."""
+    permission_classes = [IsCardPulseUser]
+    serializer_class = PurchaseSerializer
+    throttle_scope = "cardpulse_money"
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # Idempotency: client key (body or header) or a generated one.
+        key = (data.get("idempotency_key") or "").strip() \
+            or request.headers.get("Idempotency-Key", "").strip() \
+            or uuid.uuid4().hex
+
+        try:
+            order = services.purchase_giftcard(
+                request.user, data["product_id"], data["face_value"],
+                idempotency_key=key, ip=client_ip(request),
+            )
+        except services.GiftcardError as exc:
+            return Response({"error": exc.message}, status=exc.status)
+
+        body = GiftCardOrderSerializer(order).data
+        http_status = 201 if order.status == GiftCardOrder.STATUS_COMPLETED else (
+            402 if order.status == GiftCardOrder.STATUS_FAILED else 202
+        )
+        return Response(body, status=http_status)
+
+
+class MyGiftcardsView(generics.ListAPIView):
+    """The signed-in user's giftcards (codes never included here)."""
+    permission_classes = [IsCardPulseUser]
+    serializer_class = GiftCardSerializer
+
+    def get_queryset(self):
+        return GiftCard.objects.filter(owner=self.request.user)
+
+
+class GiftcardDetailView(generics.RetrieveAPIView):
+    permission_classes = [IsCardPulseUser]
+    serializer_class = GiftCardSerializer
+
+    def get_queryset(self):
+        return GiftCard.objects.filter(owner=self.request.user)
+
+
+class RevealGiftcardView(generics.GenericAPIView):
+    """Reveal a card's code (requires txn PIN). Makes the card non-tradeable."""
+    permission_classes = [IsCardPulseUser]
+    serializer_class = RevealSerializer
+
+    def post(self, request, pk):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            payload = services.reveal_card(
+                request.user, pk, serializer.validated_data["pin"], ip=client_ip(request)
+            )
+        except services.GiftcardError as exc:
+            return Response({"error": exc.message}, status=exc.status)
+        return Response(payload, status=200)

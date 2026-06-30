@@ -170,6 +170,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "login": "10/min",
         "register": "20/hour",
+        # CardPulse money actions (buy / trade / send / withdraw).
+        "cardpulse_money": "30/min",
     },
 }
 

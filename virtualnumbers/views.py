@@ -15,6 +15,8 @@ from .serializers import VirtualNumberSerializer
 from users.models import Wallet
 from common.cache_utils import invalidate_user_wallet_caches
 from common.providers import get_otp_provider, ProviderError
+from common.fx import get_rate, convert, FxError
+from common.currencies import quantize
 
 load_dotenv()
 
@@ -54,6 +56,16 @@ def wallet_available(wallet):
     return safe_decimal(wallet.balance) - safe_decimal(getattr(wallet, "reserved_balance", "0"))
 
 
+def user_currency(request):
+    """The wallet currency of the requesting user (defaults to NGN)."""
+    u = getattr(request, "user", None)
+    if u and getattr(u, "is_authenticated", False):
+        w = getattr(u, "wallet", None)
+        if w and getattr(w, "currency", None):
+            return w.currency
+    return "NGN"
+
+
 class GetServicesView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
 
@@ -74,10 +86,20 @@ class GetServicesView(generics.GenericAPIView):
 
         profit = safe_decimal(getattr(settings, "VIRTUALNUMBER_PROFIT_MARGIN", 0.3))
 
+        # Show prices in the user's wallet currency.
+        cur = user_currency(request)
+        rate = Decimal("1")
+        if cur != "NGN":
+            try:
+                rate = get_rate("NGN", cur)
+            except FxError:
+                cur = "NGN"  # fall back to NGN display rather than break the list
+
         services = []
         for item in data.get("data", []):
             base_price = safe_decimal(item.get("price", 0))
             final_price = (base_price * (Decimal("1") + profit)).quantize(Decimal("0.01"))
+            display_price = quantize(final_price * rate, cur)
 
             services.append(
                 {
@@ -85,7 +107,9 @@ class GetServicesView(generics.GenericAPIView):
                     "name": item.get("name"),
                     "success_rate": item.get("success_rate"),
                     "base_price": float(base_price),
-                    "price_with_profit": float(final_price),
+                    "price_with_profit": float(final_price),  # NGN (internal)
+                    "price": float(display_price),             # user's currency
+                    "currency": cur,
                 }
             )
 
@@ -126,7 +150,16 @@ class PurchaseNumberView(generics.GenericAPIView):
 
         base_price = safe_decimal(selected_pool.get("price", 0))
         profit = safe_decimal(getattr(settings, "VIRTUALNUMBER_PROFIT_MARGIN", 0.3))
-        final_price = (base_price * (Decimal("1") + profit)).quantize(Decimal("0.01"))
+        final_price_ngn = (base_price * (Decimal("1") + profit)).quantize(Decimal("0.01"))
+
+        # Charge in the wallet's own currency (convert the NGN price; round to the
+        # currency's exact precision so nothing is lost). The stored cost is in
+        # that currency, so charge/cancel later need no further conversion.
+        cur = getattr(wallet, "currency", None) or "NGN"
+        try:
+            final_price = convert(final_price_ngn, "NGN", cur)
+        except FxError:
+            return Response({"error": "Currency conversion unavailable. Please try again."}, status=503)
 
         if wallet_available(wallet) < final_price:
             return Response({"error": "Insufficient wallet balance"}, status=400)

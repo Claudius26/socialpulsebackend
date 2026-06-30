@@ -142,8 +142,14 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 CORS_ALLOWED_ORIGINS = [
     "https://socialpulse-cstr.vercel.app",
-    "http://localhost:5173",          
-    "http://127.0.0.1:5173", 
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+# Allow ANY localhost/127.0.0.1 port in dev (Vite often falls back to 5174+).
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^http://localhost:\d+$",
+    r"^http://127\.0\.0\.1:\d+$",
 ]
 
 CSRF_TRUSTED_ORIGINS = [

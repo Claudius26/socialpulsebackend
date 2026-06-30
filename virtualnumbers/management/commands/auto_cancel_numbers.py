@@ -9,18 +9,37 @@ from virtualnumbers.models import VirtualNumber
 from users.models import Wallet
 from common.cache_utils import invalidate_user_wallet_caches
 
-AUTO_CANCEL_MINUTES = int(os.getenv("VIRTUALNUMBER_AUTO_CANCEL_MINUTES", "20"))
+# A number is only auto-cancelled once it has waited its FULL window with no SMS.
+# The window is measured from the purchase time (created_at) and is configured via
+# VIRTUALNUMBER_AUTO_CANCEL_MINUTES (default 20). We hard-floor it at 15 minutes
+# ONLY as a safety net: a freshly-ordered number can NEVER be swept even if the
+# env var is missing, 0, or misconfigured (which would otherwise make the cutoff
+# ~= now and cancel everything, including orders placed seconds ago). The floor
+# only ever raises a too-small value up to 15 — it never lowers a configured 20.
+MIN_WAIT_MINUTES = 15
+
+
+def _wait_minutes() -> int:
+    try:
+        configured = int(os.getenv("VIRTUALNUMBER_AUTO_CANCEL_MINUTES", "20"))
+    except (TypeError, ValueError):
+        configured = 20
+    return max(MIN_WAIT_MINUTES, configured)
 
 
 class Command(BaseCommand):
-    help = "Auto-cancel numbers that received no SMS after X minutes, releasing the held funds."
+    help = "Auto-cancel numbers that received no SMS after their wait window, releasing the held funds."
 
     def handle(self, *args, **options):
-        cutoff = timezone.now() - timezone.timedelta(minutes=AUTO_CANCEL_MINUTES)
+        wait_minutes = _wait_minutes()
+        cutoff = timezone.now() - timezone.timedelta(minutes=wait_minutes)
 
+        # Only numbers whose purchase time is at/older than the cutoff — i.e. they
+        # have already counted down their full wait window without an SMS.
         qs = (
             VirtualNumber.objects
             .filter(status__in=["Pending", "Active"], charged=False, created_at__lte=cutoff)
+            .filter(sms_received_at__isnull=True)
             .filter(messages__isnull=True)
         )
 
@@ -51,4 +70,6 @@ class Command(BaseCommand):
             except Exception:
                 continue
 
-        self.stdout.write(self.style.SUCCESS(f"Auto-cancelled: {count}"))
+        self.stdout.write(self.style.SUCCESS(
+            f"Auto-cancelled {count} number(s) older than {wait_minutes} min with no SMS."
+        ))

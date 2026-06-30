@@ -98,8 +98,7 @@ class CardPulseLoginView(generics.GenericAPIView):
         password = serializer.validated_data["password"]
 
         # Resolve email OR username/@tag -> the account. We look up admins too,
-        # but only so we can give them a clear "use the web dashboard" message
-        # (after a correct password) — admins are NEVER allowed into the app.
+        # only so the staff check below fires — admins are NEVER allowed in.
         realm_or_admin = Q(app=User.APP_CARDPULSE) | Q(is_staff=True) | Q(is_superuser=True)
         if "@" in login:
             account = User.objects.filter(realm_or_admin, email__iexact=login).first()
@@ -110,12 +109,10 @@ class CardPulseLoginView(generics.GenericAPIView):
 
         user = authenticate(request, email=account.email, password=password) if account else None
 
-        # Admin/staff accounts are web-dashboard only — block them from the app.
+        # Admin/staff accounts are web-dashboard only — but never reveal that.
+        # Treat them exactly like a failed login so nothing is given away.
         if user and (user.is_staff or user.is_superuser):
-            return Response(
-                {"error": "Admin accounts can't sign in to the app. Please use the web dashboard."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            user = None
         if not user or getattr(user, "app", None) != User.APP_CARDPULSE:
             return Response({"error": "Invalid credentials."}, status=status.HTTP_400_BAD_REQUEST)
 

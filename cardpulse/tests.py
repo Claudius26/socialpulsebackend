@@ -234,15 +234,20 @@ class SetPhoneTests(APITestCase):
 class AdminBlockedFromAppTests(APITestCase):
     """Admin/staff accounts are web-dashboard only — never allowed in the app."""
 
-    def test_admin_cannot_login_to_app(self):
+    def test_admin_login_looks_like_a_normal_failed_login(self):
+        # Even with the CORRECT password, an admin gets the generic message —
+        # nothing reveals that the account is an admin.
         admin = make_user("boss@cardpulse.test", app=User.APP_CARDPULSE, tag="boss")
         admin.is_staff = True
         admin.save(update_fields=["is_staff"])
         res = self.client.post(reverse("cardpulse:login"), {
             "login": "boss@cardpulse.test", "password": "StrongPass123",
         }, format="json")
-        self.assertEqual(res.status_code, 403)
-        self.assertIn("web dashboard", res.data["error"])
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["error"], "Invalid credentials.")
+        # must not hint at admin/dashboard
+        self.assertNotIn("admin", res.data["error"].lower())
+        self.assertNotIn("dashboard", res.data["error"].lower())
 
     def test_admin_token_cannot_access_app_endpoints(self):
         admin = make_user("boss2@cardpulse.test", app=User.APP_CARDPULSE, tag="boss2")

@@ -5,13 +5,16 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.urls import reverse
 from rest_framework.test import APITestCase
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from cardpulse.models import LedgerEntry, ProfitEntry, RateConfig
 from users.services import get_or_create_wallet
 
 from . import services
 from .models import GiftCard, GiftCardSale
+from .tests import FakeProvider, FIXED_PRODUCT
 
 User = get_user_model()
 
@@ -63,6 +66,33 @@ class TradeCurrencyTests(APITestCase):
         # profit stays NGN: 16000 - 14400 = 1600
         self.assertTrue(ProfitEntry.objects.filter(
             source="trade", amount=Decimal("1600.00"), currency="NGN").exists())
+
+
+def _auth(user):
+    refresh = RefreshToken.for_user(user)
+    refresh["realm"] = user.app
+    return f"Bearer {refresh.access_token}"
+
+
+class CatalogDisplayCurrencyTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = _ghs_user("ghcat@cardpulse.test", "ghcat")
+
+    @patch("common.fx.get_rate", return_value=Decimal("0.05"))
+    @patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600"))
+    @patch("common.providers.get_giftcard_provider", return_value=FakeProvider())
+    def test_catalog_prices_shown_in_wallet_currency(self, _prov, _rate, _fx):
+        res = self.client.get(reverse("giftcards:catalog"), HTTP_AUTHORIZATION=_auth(self.user))
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["price_currency"], "GHS")
+        amazon = res.data["products"][0]
+        self.assertEqual(amazon["price_currency"], "GHS")
+        self.assertEqual(amazon["currency"], "USD")  # card face currency unchanged
+        # 10 USD * 1600 = 16000 NGN; * 0.05 = 800.00 GHS (NGN price kept too)
+        d0 = amazon["denominations"][0]
+        self.assertEqual(d0["price_ngn"], 16000.0)
+        self.assertEqual(d0["price"], 800.0)
 
 
 class SaleCurrencyTests(APITestCase):

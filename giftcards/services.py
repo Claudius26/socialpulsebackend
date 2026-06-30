@@ -189,6 +189,58 @@ def fetch_catalog(*, country=None, page=1, size=50, search=None) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Display localization — restate NGN catalog prices in the user's wallet
+# currency. The cached catalog stays NGN (shared across users); this runs
+# per-request so a Ghanaian user sees GHS, a Kenyan KES, etc.
+# --------------------------------------------------------------------------- #
+def _ngn_rate(currency: str):
+    """(rate, currency) to turn an NGN amount into the user's currency. Falls
+    back to NGN display (rate 1) if no live rate — never an invented price."""
+    currency = (currency or "NGN").upper()
+    if currency == "NGN":
+        return Decimal("1"), "NGN"
+    try:
+        return fx.get_rate("NGN", currency), currency
+    except fx.FxError:
+        return Decimal("1"), "NGN"
+
+
+def _localize_entry(entry: dict, rate: Decimal, currency: str) -> dict:
+    from common.currencies import quantize
+
+    def conv(v):
+        return float(quantize(Decimal(str(v or 0)) * rate, currency))
+
+    e = dict(entry)
+    # `currency` stays the CARD's face-value currency (e.g. USD for "USD 10").
+    # `price_currency` is the wallet currency the `price` fields below are in.
+    e["price_currency"] = currency
+    denoms = e.get("denominations") or []
+    if denoms:
+        e["denominations"] = [{**d, "price": conv(d.get("price_ngn"))} for d in denoms]
+    rng = e.get("range")
+    if rng:
+        r = dict(rng)
+        r["min_price"] = conv(r.get("min_price_ngn"))
+        r["max_price"] = conv(r.get("max_price_ngn"))
+        e["range"] = r
+    return e
+
+
+def localize_product(entry: dict, currency: str) -> dict:
+    rate, cur = _ngn_rate(currency)
+    return _localize_entry(entry, rate, cur)
+
+
+def localize_catalog(data: dict, currency: str) -> dict:
+    rate, cur = _ngn_rate(currency)
+    out = dict(data)
+    out["price_currency"] = cur
+    out["products"] = [_localize_entry(p, rate, cur) for p in data.get("products", [])]
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Purchase (mint) — the first real money flow
 # --------------------------------------------------------------------------- #
 def _resolve_purchase(product: dict, face_value: Decimal):

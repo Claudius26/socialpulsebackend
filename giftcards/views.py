@@ -6,6 +6,11 @@ from rest_framework.response import Response
 
 from cardpulse.permissions import IsCardPulseUser, IsVerifiedCardPulseUser
 from cardpulse.services import client_ip
+
+
+def _wallet_currency(request):
+    w = getattr(getattr(request, "user", None), "wallet", None)
+    return (getattr(w, "currency", None) or "NGN") if w else "NGN"
 from common.providers import get_giftcard_provider, ProviderError
 from common.cache_utils import get_or_set_cache
 
@@ -47,7 +52,7 @@ class GiftcardCatalogView(generics.GenericAPIView):
                 {"error": "This service is temporarily unavailable. Please try again later."},
                 status=503,
             )
-        return Response(data, status=200)
+        return Response(services.localize_catalog(data, _wallet_currency(request)), status=200)
 
 
 class GiftcardProductView(generics.GenericAPIView):
@@ -65,7 +70,8 @@ class GiftcardProductView(generics.GenericAPIView):
             )
         if not isinstance(raw, dict) or not raw.get("productId"):
             return Response({"error": "Product not found"}, status=404)
-        return Response(services.normalize_product(raw), status=200)
+        entry = services.normalize_product(raw)
+        return Response(services.localize_product(entry, _wallet_currency(request)), status=200)
 
 
 class GiftcardCountriesView(generics.GenericAPIView):

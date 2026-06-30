@@ -3,7 +3,7 @@ from django.urls import path
 from .views import (
     GiftcardCatalogView, GiftcardProductView, GiftcardCountriesView,
     PurchaseGiftcardView, MyGiftcardsView, GiftcardDetailView, RevealGiftcardView,
-    TradeGiftcardView, MyTradesView,
+    TradeGiftcardView, MyTradesView, SubmitSaleView, MySalesView,
 )
 
 app_name = "giftcards"
@@ -18,4 +18,6 @@ urlpatterns = [
     path("mine/<int:pk>/reveal/", RevealGiftcardView.as_view(), name="reveal"),
     path("mine/<int:pk>/trade/", TradeGiftcardView.as_view(), name="trade"),
     path("trades/", MyTradesView.as_view(), name="trades"),
+    path("sell/", SubmitSaleView.as_view(), name="sell"),
+    path("sales/", MySalesView.as_view(), name="sales"),
 ]

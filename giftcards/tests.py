@@ -13,7 +13,7 @@ from cardpulse.models import LedgerEntry, ProfitEntry, RateConfig
 from users.services import get_or_create_wallet
 
 from . import services
-from .models import GiftCard, GiftCardOrder, GiftCardTrade
+from .models import GiftCard, GiftCardOrder, GiftCardTrade, GiftCardSale
 
 User = get_user_model()
 
@@ -369,3 +369,48 @@ class TradeTests(APITestCase):
         self.assertEqual(self.user.wallet.balance, Decimal("14400.00"))
         card.refresh_from_db()
         self.assertIsNone(card.owner_id)
+
+
+class SellTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        RateConfig.objects.all().delete()
+        self.user = make_cardpulse_user("seller@cardpulse.test", tag="seller")
+        get_or_create_wallet(self.user)
+
+    def test_submit_creates_pending_sale(self):
+        res = self.client.post(reverse("giftcards:sell"), {
+            "brand": "Amazon", "country": "United States", "currency": "USD",
+            "face_value": "100", "code": "ABC-123", "image": "base64data",
+        }, format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["status"], "pending_validation")
+        sale = GiftCardSale.objects.get(user=self.user)
+        self.assertEqual(sale.payout_ngn, Decimal("0"))      # not paid until validated
+        self.assertNotEqual(sale.code_encrypted, "ABC-123")   # encrypted at rest
+        self.assertEqual(decrypt(sale.code_encrypted), "ABC-123")
+
+    def test_unverified_user_blocked(self):
+        unverified = User(email="uv@cardpulse.test", username="uv@cardpulse.test",
+                          full_name="UV", app=User.APP_CARDPULSE, tag="uvuser", email_verified=False)
+        unverified.set_password("x")
+        unverified.save()
+        res = self.client.post(reverse("giftcards:sell"), {
+            "brand": "Amazon", "country": "US", "face_value": "100",
+        }, format="json", HTTP_AUTHORIZATION=auth(unverified))
+        self.assertEqual(res.status_code, 403)
+
+    @patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600"))
+    def test_admin_approve_pays_90_percent(self, _fx):
+        self.client.post(reverse("giftcards:sell"), {
+            "brand": "Amazon", "country": "US", "currency": "USD", "face_value": "100",
+        }, format="json", HTTP_AUTHORIZATION=auth(self.user))
+        sale = GiftCardSale.objects.get(user=self.user)
+        admin = make_cardpulse_user("adm@cardpulse.test", tag="admseller")
+        services.approve_sale(admin, sale.id)
+        sale.refresh_from_db()
+        self.user.wallet.refresh_from_db()
+        # 100 USD * 1600 = 160000; seller gets 90% = 144000
+        self.assertEqual(sale.status, "approved")
+        self.assertEqual(sale.payout_ngn, Decimal("144000.00"))
+        self.assertEqual(self.user.wallet.balance, Decimal("144000.00"))

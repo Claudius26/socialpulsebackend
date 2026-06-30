@@ -15,7 +15,7 @@ from rest_framework.response import Response
 
 from banking.models import Withdrawal
 from banking import services as banking_services
-from giftcards.models import GiftCard, GiftCardOrder, GiftCardTrade
+from giftcards.models import GiftCard, GiftCardOrder, GiftCardTrade, GiftCardSale
 from giftcards import services as giftcard_services
 from p2p.models import Transfer
 from users.models import Wallet
@@ -146,6 +146,42 @@ def trade_reject(request, pk):
     except giftcard_services.GiftcardError as exc:
         return Response({"error": exc.message}, status=exc.status)
     return Response({"message": "Trade rejected."}, status=200)
+
+
+@api_view(["GET"])
+@permission_classes([IsAdminUser])
+def sales_queue(request):
+    status_f = request.query_params.get("status", "pending_validation")
+    qs = GiftCardSale.objects.select_related("user").filter(status=status_f)[:500]
+    return Response([
+        {
+            "id": s.id, "user_email": s.user.email, "user_tag": s.user.tag,
+            "brand": s.brand, "country": s.country, "currency": s.currency,
+            "face_value": float(s.face_value), "has_image": bool(s.image_base64),
+            "status": s.status, "created_at": s.created_at.isoformat(),
+        }
+        for s in qs
+    ], status=200)
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminUser])
+def sale_approve(request, pk):
+    try:
+        giftcard_services.approve_sale(request.user, pk)
+    except giftcard_services.GiftcardError as exc:
+        return Response({"error": exc.message}, status=exc.status)
+    return Response({"message": "Sale approved and paid."}, status=200)
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminUser])
+def sale_reject(request, pk):
+    try:
+        giftcard_services.reject_sale(request.user, pk, request.data.get("reason", ""))
+    except giftcard_services.GiftcardError as exc:
+        return Response({"error": exc.message}, status=exc.status)
+    return Response({"message": "Sale rejected."}, status=200)
 
 
 @api_view(["GET"])

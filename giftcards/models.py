@@ -151,3 +151,49 @@ class GiftCardTrade(models.Model):
 
     def __str__(self):
         return f"Trade {self.id} payout={self.payout_ngn} [{self.status}]"
+
+
+class GiftCardSale(models.Model):
+    """A user selling a giftcard they ALREADY OWN (acquired elsewhere) for cash.
+
+    The user snaps the card + states brand/country/amount/(optional code). The
+    card is validated by an external validation/buyback API (pluggable). Until a
+    provider confirms, the sale sits at pending_validation. On approval we pay
+    the user (face value x rate x payout_rate) and keep the margin.
+    """
+    STATUS_PENDING = "pending_validation"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending validation"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="giftcard_sales")
+    brand = models.CharField(max_length=120)       # the card "type", e.g. Amazon
+    country = models.CharField(max_length=80)
+    currency = models.CharField(max_length=8, default="USD")
+    face_value = models.DecimalField(max_digits=14, decimal_places=2)   # stated amount
+
+    code_encrypted = models.TextField(blank=True, default="")           # optional, encrypted
+    image_base64 = models.TextField(blank=True, default="")             # the snapped photo
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    payout_ngn = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    profit_ngn = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    validation_ref = models.CharField(max_length=120, blank=True, default="")
+    reason = models.CharField(max_length=255, blank=True, default="")
+    reviewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="reviewed_sales",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "-created_at"]), models.Index(fields=["status", "-created_at"])]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Sale {self.id} {self.brand} {self.face_value}{self.currency} [{self.status}]"

@@ -503,3 +503,104 @@ def reject_trade(admin, trade_id, reason=""):
     record_audit("giftcard_trade_rejected", user=admin, metadata={"trade": trade.id})
     return trade
 
+
+# --------------------------------------------------------------------------- #
+# Sell a card you already own (submit -> validate -> payout)
+# --------------------------------------------------------------------------- #
+def submit_sale(user, *, brand, country, face_value, currency="USD", code="", image="", ip=None):
+    """Create a sale submission and run it past the validation provider.
+
+    With no real provider wired, it stays pending_validation. If a provider
+    approves synchronously, we pay out immediately."""
+    from .models import GiftCardSale
+    from common.providers import get_card_validation_provider
+
+    fv = _money(face_value)
+    if fv <= 0:
+        raise GiftcardError("Amount must be greater than zero.")
+
+    sale = GiftCardSale.objects.create(
+        user=user, brand=(brand or "").strip(), country=(country or "").strip(),
+        currency=(currency or "USD").upper(), face_value=fv,
+        code_encrypted=encrypt(code) if code else "", image_base64=image or "",
+        status=GiftCardSale.STATUS_PENDING,
+    )
+    record_audit("giftcard_sale_submitted", user=user, ip_address=ip,
+                 detail=f"{sale.brand} {fv}{sale.currency}", metadata={"sale": sale.id})
+
+    try:
+        result = get_card_validation_provider().validate(
+            brand=sale.brand, country=sale.country, currency=sale.currency,
+            face_value=float(fv), code=code or None, image=image or None,
+        )
+    except Exception:
+        result = {"status": "pending"}
+
+    status_ = (result or {}).get("status", "pending")
+    sale.validation_ref = (result or {}).get("ref", "")
+    if status_ == "approved":
+        _approve_sale_payout(sale)
+    elif status_ == "rejected":
+        sale.status = GiftCardSale.STATUS_REJECTED
+        sale.reason = (result or {}).get("reason", "Rejected by validator")[:255]
+        sale.save(update_fields=["status", "reason", "validation_ref"])
+    else:
+        sale.save(update_fields=["validation_ref"])
+    return sale
+
+
+def _approve_sale_payout(sale):
+    """Pay the seller (face value x rate x payout_rate) and bank the margin."""
+    from users.models import Wallet
+    from .models import GiftCardSale
+
+    rate = Decimal(str(get_rate_config().trade_payout_rate))
+    value = (Decimal(str(sale.face_value)) * currency_to_ngn_rate(sale.currency)).quantize(Decimal("0.01"))
+    payout = (value * rate).quantize(Decimal("0.01"))
+    profit = (value - payout).quantize(Decimal("0.01"))
+
+    with transaction.atomic():
+        locked = GiftCardSale.objects.select_for_update().get(pk=sale.pk)
+        if locked.status == GiftCardSale.STATUS_APPROVED:
+            return locked
+        wallet = Wallet.objects.select_for_update().get(user=locked.user)
+        wallet.balance = F("balance") + payout
+        wallet.save(update_fields=["balance"])
+        wallet.refresh_from_db(fields=["balance"])
+        locked.status = GiftCardSale.STATUS_APPROVED
+        locked.payout_ngn = payout
+        locked.profit_ngn = profit
+        locked.reviewed_at = timezone.now()
+        locked.save(update_fields=["status", "payout_ngn", "profit_ngn", "reviewed_at"])
+        record_ledger(locked.user, "credit", "trade_payout", payout, balance_after=wallet.balance,
+                      reference=f"sale:{locked.id}", description=f"{locked.brand} sale")
+        record_profit(profit, user=locked.user, source="sale", reference=f"sale:{locked.id}")
+    sale.refresh_from_db()
+    return sale
+
+
+def approve_sale(admin, sale_id):
+    from .models import GiftCardSale
+    sale = GiftCardSale.objects.get(pk=sale_id)
+    if sale.status != GiftCardSale.STATUS_PENDING:
+        raise GiftcardError("Sale is not pending validation.", status=400)
+    sale.reviewer = admin
+    sale.save(update_fields=["reviewer"])
+    _approve_sale_payout(sale)
+    record_audit("giftcard_sale_approved", user=admin, metadata={"sale": sale.id})
+    return sale
+
+
+def reject_sale(admin, sale_id, reason=""):
+    from .models import GiftCardSale
+    sale = GiftCardSale.objects.get(pk=sale_id)
+    if sale.status != GiftCardSale.STATUS_PENDING:
+        raise GiftcardError("Sale is not pending validation.", status=400)
+    sale.status = GiftCardSale.STATUS_REJECTED
+    sale.reviewer = admin
+    sale.reason = (reason or "Rejected")[:255]
+    sale.reviewed_at = timezone.now()
+    sale.save(update_fields=["status", "reviewer", "reason", "reviewed_at"])
+    record_audit("giftcard_sale_rejected", user=admin, metadata={"sale": sale.id})
+    return sale
+

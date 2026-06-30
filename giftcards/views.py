@@ -10,10 +10,10 @@ from common.providers import get_giftcard_provider, ProviderError
 from common.cache_utils import get_or_set_cache
 
 from . import services
-from .models import GiftCard, GiftCardOrder, GiftCardTrade
+from .models import GiftCard, GiftCardOrder, GiftCardTrade, GiftCardSale
 from .serializers import (
     GiftCardSerializer, GiftCardOrderSerializer, PurchaseSerializer, RevealSerializer,
-    TradeSerializer, TradeResultSerializer,
+    TradeSerializer, TradeResultSerializer, SubmitSaleSerializer, SaleSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -168,3 +168,32 @@ class MyTradesView(generics.ListAPIView):
 
     def get_queryset(self):
         return GiftCardTrade.objects.filter(user=self.request.user).select_related("card")
+
+
+class SubmitSaleView(generics.GenericAPIView):
+    """Sell a giftcard you already own — snap it + details, we validate & pay."""
+    permission_classes = [IsVerifiedCardPulseUser]
+    serializer_class = SubmitSaleSerializer
+    throttle_scope = "cardpulse_money"
+
+    def post(self, request):
+        s = self.get_serializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        d = s.validated_data
+        try:
+            sale = services.submit_sale(
+                request.user, brand=d["brand"], country=d["country"],
+                currency=d.get("currency", "USD"), face_value=d["face_value"],
+                code=d.get("code", ""), image=d.get("image", ""), ip=client_ip(request),
+            )
+        except services.GiftcardError as exc:
+            return Response({"error": exc.message}, status=exc.status)
+        return Response(SaleSerializer(sale).data, status=201)
+
+
+class MySalesView(generics.ListAPIView):
+    permission_classes = [IsCardPulseUser]
+    serializer_class = SaleSerializer
+
+    def get_queryset(self):
+        return GiftCardSale.objects.filter(user=self.request.user)

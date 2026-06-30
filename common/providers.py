@@ -346,10 +346,28 @@ class PaystackPayoutProvider(BasePayoutProvider):
 # --------------------------------------------------------------------------- #
 # Registry — call-sites ask for the active provider by domain.
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Giftcard VALIDATION/buyback providers (for user-submitted cards to sell).
+# No universal API exists for validating arbitrary third-party cards, so the
+# default returns "pending" — swap in a real provider when one is available.
+# --------------------------------------------------------------------------- #
+class BaseCardValidationProvider:
+    def validate(self, *, brand, country, currency, face_value, code=None, image=None) -> dict:
+        """Return {"status": "approved"|"rejected"|"pending", "ref": str, "reason": str}."""
+        raise NotImplementedError
+
+
+class NullValidationProvider(BaseCardValidationProvider):
+    """No real validator wired yet — every submission waits for one."""
+    def validate(self, **kwargs) -> dict:
+        return {"status": "pending", "ref": "", "reason": "Awaiting validation provider."}
+
+
 SMM_PROVIDERS = {"resellersmm": ResellerSmmProvider}
 OTP_PROVIDERS = {"zapotp": ZapOtpProvider}
 GIFTCARD_PROVIDERS = {"reloadly": ReloadlyGiftcardProvider}
 PAYOUT_PROVIDERS = {"paystack": PaystackPayoutProvider}
+CARD_VALIDATION_PROVIDERS = {"null": NullValidationProvider}
 
 
 def get_smm_provider(name="resellersmm") -> BaseSMMProvider:
@@ -366,3 +384,8 @@ def get_giftcard_provider(name="reloadly") -> BaseGiftcardProvider:
 
 def get_payout_provider(name="paystack") -> BasePayoutProvider:
     return PAYOUT_PROVIDERS[name]()
+
+
+def get_card_validation_provider(name=None) -> BaseCardValidationProvider:
+    name = name or os.getenv("CARD_VALIDATION_PROVIDER", "null")
+    return CARD_VALIDATION_PROVIDERS.get(name, NullValidationProvider)()

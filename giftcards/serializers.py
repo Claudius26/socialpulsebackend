@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import GiftCard, GiftCardOrder, GiftCardTrade
+from .models import GiftCard, GiftCardOrder, GiftCardTrade, GiftCardSale
 
 
 class GiftCardSerializer(serializers.ModelSerializer):
@@ -55,3 +55,20 @@ class TradeResultSerializer(serializers.ModelSerializer):
 
     def get_product(self, obj):
         return obj.card.product_name if obj.card_id else ""
+
+
+class SubmitSaleSerializer(serializers.Serializer):
+    brand = serializers.CharField(max_length=120)
+    country = serializers.CharField(max_length=80)
+    currency = serializers.CharField(max_length=8, required=False, default="USD")
+    face_value = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.5"))
+    code = serializers.CharField(required=False, allow_blank=True)
+    image = serializers.CharField(required=False, allow_blank=True)  # base64 of the snapped card
+
+
+class SaleSerializer(serializers.ModelSerializer):
+    # The seller sees status + payout only — never the validation margin/profit.
+    class Meta:
+        model = GiftCardSale
+        fields = ("id", "brand", "country", "currency", "face_value",
+                  "status", "payout_ngn", "reason", "created_at")

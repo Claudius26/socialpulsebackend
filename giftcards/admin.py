@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import GiftCard, GiftCardOrder, GiftCardTrade
+from .models import GiftCard, GiftCardOrder, GiftCardTrade, GiftCardSale
 
 
 @admin.register(GiftCard)
@@ -28,3 +28,14 @@ class GiftCardTradeAdmin(admin.ModelAdmin):
     list_filter = ("status",)
     search_fields = ("user__email", "user__tag")
     readonly_fields = ("created_at", "reviewed_at")
+
+
+@admin.register(GiftCardSale)
+class GiftCardSaleAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "brand", "country", "face_value", "currency",
+                    "status", "payout_ngn", "created_at")
+    list_filter = ("status", "currency")
+    search_fields = ("user__email", "user__tag", "brand")
+    # Don't surface the encrypted code or the (large) image blob in the list.
+    exclude = ("code_encrypted",)
+    readonly_fields = ("image_base64", "validation_ref", "created_at", "reviewed_at")

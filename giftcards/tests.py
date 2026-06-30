@@ -9,11 +9,11 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from common.providers import ProviderError
 from cardpulse.crypto import decrypt
-from cardpulse.models import LedgerEntry
+from cardpulse.models import LedgerEntry, ProfitEntry, RateConfig
 from users.services import get_or_create_wallet
 
 from . import services
-from .models import GiftCard, GiftCardOrder
+from .models import GiftCard, GiftCardOrder, GiftCardTrade
 
 User = get_user_model()
 
@@ -282,3 +282,89 @@ class RevealTests(APITestCase):
         self.assertEqual(res.status_code, 403)
         card.refresh_from_db()
         self.assertTrue(card.redeemable)  # unchanged
+
+
+def owned_card(owner):
+    return GiftCard.objects.create(
+        owner=owner, product_id=1, product_name="Amazon US", brand="Amazon",
+        country="US", currency="USD", face_value=Decimal("10"),
+        face_value_ngn=Decimal("16000"), cost_ngn=Decimal("16000"),
+        code_encrypted="enc", pin_encrypted="enc", status=GiftCard.STATUS_OWNED,
+        redeemable=True,
+    )
+
+
+class TradeTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        RateConfig.objects.all().delete()  # default 0.90 payout, 0 threshold
+        self.user = make_cardpulse_user("trader@cardpulse.test", tag="trader")
+        self.user.set_transaction_pin("1234")
+        self.user.save()
+        get_or_create_wallet(self.user)
+
+    @patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600"))
+    def test_trade_pays_90_percent_and_banks_card(self, _fx):
+        card = owned_card(self.user)
+        res = self.client.post(reverse("giftcards:trade", args=[card.id]), {"pin": "1234"},
+                               format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 201, res.data)
+        # 10 USD * 1600 = 16000 value; trader gets 90% = 14400
+        self.assertEqual(Decimal(str(res.data["payout_ngn"])), Decimal("14400.00"))
+        self.assertEqual(res.data["status"], "completed")
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal("14400.00"))
+        card.refresh_from_db()
+        self.assertIsNone(card.owner_id)               # back to inventory
+        self.assertEqual(card.status, GiftCard.STATUS_TRADED)
+        self.assertTrue(LedgerEntry.objects.filter(user=self.user, kind="trade_payout").exists())
+        # platform keeps 10% = 1600
+        self.assertTrue(ProfitEntry.objects.filter(source="trade", amount=Decimal("1600.00")).exists())
+
+    @patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600"))
+    def test_trade_response_hides_margin(self, _fx):
+        card = owned_card(self.user)
+        res = self.client.post(reverse("giftcards:trade", args=[card.id]), {"pin": "1234"},
+                               format="json", HTTP_AUTHORIZATION=auth(self.user))
+        for hidden in ("value_ngn", "profit_ngn", "payout_rate"):
+            self.assertNotIn(hidden, res.data)
+
+    def test_trade_wrong_pin(self):
+        card = owned_card(self.user)
+        res = self.client.post(reverse("giftcards:trade", args=[card.id]), {"pin": "0000"},
+                               format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 403)
+        card.refresh_from_db()
+        self.assertEqual(card.owner_id, self.user.id)
+
+    def test_cannot_trade_revealed_card(self):
+        card = owned_card(self.user)
+        card.status = GiftCard.STATUS_REVEALED
+        card.redeemable = False
+        card.save()
+        res = self.client.post(reverse("giftcards:trade", args=[card.id]), {"pin": "1234"},
+                               format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 400)
+
+    @patch.object(services, "currency_to_ngn_rate", return_value=Decimal("1600"))
+    def test_above_threshold_goes_to_review_then_admin_approves(self, _fx):
+        cfg = RateConfig.get_solo()
+        cfg.manual_review_threshold = Decimal("10000")  # payout 14400 >= 10000
+        cfg.save()
+        card = owned_card(self.user)
+        res = self.client.post(reverse("giftcards:trade", args=[card.id]), {"pin": "1234"},
+                               format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["status"], "pending_review")
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal("0.00"))  # not paid yet
+        card.refresh_from_db()
+        self.assertFalse(card.redeemable)  # locked
+
+        admin = make_cardpulse_user("admin@cardpulse.test", tag="adminx")
+        trade = GiftCardTrade.objects.get(user=self.user)
+        services.approve_trade(admin, trade.id)
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal("14400.00"))
+        card.refresh_from_db()
+        self.assertIsNone(card.owner_id)

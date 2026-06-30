@@ -110,3 +110,44 @@ class GiftCardOrder(models.Model):
 
     def __str__(self):
         return f"Order {self.id} {self.product_name} [{self.status}]"
+
+
+class GiftCardTrade(models.Model):
+    """A user cashing out a giftcard. The trader receives payout_ngn; the
+    platform keeps (value_ngn - payout_ngn). The margin (value/rate/profit) is
+    stored for admin/reporting but NEVER returned to the client."""
+
+    STATUS_COMPLETED = "completed"
+    STATUS_PENDING_REVIEW = "pending_review"   # above manual-review threshold
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = [
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_PENDING_REVIEW, "Pending review"),
+        (STATUS_REJECTED, "Rejected"),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="giftcard_trades")
+    card = models.ForeignKey(GiftCard, on_delete=models.SET_NULL, null=True, blank=True, related_name="trades")
+
+    face_value = models.DecimalField(max_digits=14, decimal_places=2)
+    currency = models.CharField(max_length=8, default="USD")
+    value_ngn = models.DecimalField(max_digits=14, decimal_places=2)     # market value (hidden)
+    payout_rate = models.DecimalField(max_digits=5, decimal_places=4)    # rate used (hidden)
+    payout_ngn = models.DecimalField(max_digits=14, decimal_places=2)    # what the trader gets
+    profit_ngn = models.DecimalField(max_digits=14, decimal_places=2)    # platform margin (hidden)
+
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_COMPLETED)
+    reviewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="reviewed_trades",
+    )
+    reason = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "-created_at"]), models.Index(fields=["status", "-created_at"])]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Trade {self.id} payout={self.payout_ngn} [{self.status}]"

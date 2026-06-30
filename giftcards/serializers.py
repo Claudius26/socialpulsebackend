@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import GiftCard, GiftCardOrder
+from .models import GiftCard, GiftCardOrder, GiftCardTrade
 
 
 class GiftCardSerializer(serializers.ModelSerializer):
@@ -37,3 +37,21 @@ class PurchaseSerializer(serializers.Serializer):
 
 class RevealSerializer(serializers.Serializer):
     pin = serializers.CharField(write_only=True)
+
+
+class TradeSerializer(serializers.Serializer):
+    """User-facing trade result. Deliberately excludes value_ngn, payout_rate
+    and profit_ngn — the trader only ever sees what THEY receive."""
+    pin = serializers.CharField(write_only=True)
+
+
+class TradeResultSerializer(serializers.ModelSerializer):
+    product = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GiftCardTrade
+        # NOTE: no value_ngn / payout_rate / profit_ngn — margin stays hidden.
+        fields = ("id", "product", "face_value", "currency", "payout_ngn", "status", "created_at")
+
+    def get_product(self, obj):
+        return obj.card.product_name if obj.card_id else ""

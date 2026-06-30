@@ -10,9 +10,10 @@ from common.providers import get_giftcard_provider, ProviderError
 from common.cache_utils import get_or_set_cache
 
 from . import services
-from .models import GiftCard, GiftCardOrder
+from .models import GiftCard, GiftCardOrder, GiftCardTrade
 from .serializers import (
     GiftCardSerializer, GiftCardOrderSerializer, PurchaseSerializer, RevealSerializer,
+    TradeSerializer, TradeResultSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,3 +143,28 @@ class RevealGiftcardView(generics.GenericAPIView):
         except services.GiftcardError as exc:
             return Response({"error": exc.message}, status=exc.status)
         return Response(payload, status=200)
+
+
+class TradeGiftcardView(generics.GenericAPIView):
+    """Cash out a card. Returns ONLY the payout the trader receives."""
+    permission_classes = [IsCardPulseUser]
+    serializer_class = TradeSerializer
+    throttle_scope = "cardpulse_money"
+
+    def post(self, request, pk):
+        s = self.get_serializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        try:
+            trade = services.trade_card(request.user, pk, s.validated_data["pin"],
+                                        ip=client_ip(request))
+        except services.GiftcardError as exc:
+            return Response({"error": exc.message}, status=exc.status)
+        return Response(TradeResultSerializer(trade).data, status=201)
+
+
+class MyTradesView(generics.ListAPIView):
+    permission_classes = [IsCardPulseUser]
+    serializer_class = TradeResultSerializer
+
+    def get_queryset(self):
+        return GiftCardTrade.objects.filter(user=self.request.user).select_related("card")

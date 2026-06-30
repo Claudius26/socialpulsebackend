@@ -385,3 +385,121 @@ def reveal_card(user, card_id, pin, *, ip=None):
         "pin": decrypt(card.pin_encrypted),
     }
 
+
+# --------------------------------------------------------------------------- #
+# Trade a card for cash — the platform keeps (1 - payout_rate), hidden.
+# --------------------------------------------------------------------------- #
+from django.utils import timezone  # noqa: E402
+
+
+def _credit_payout_and_bank_card(user, card, trade):
+    """Pay the trader, move the card into platform inventory, record profit."""
+    from users.models import Wallet
+    from .models import GiftCard
+
+    wallet = Wallet.objects.select_for_update().get(user=user)
+    wallet.balance = F("balance") + trade.payout_ngn
+    wallet.save(update_fields=["balance"])
+    wallet.refresh_from_db(fields=["balance"])
+
+    card.owner = None  # back into platform inventory for resale (recirculation)
+    card.status = GiftCard.STATUS_TRADED
+    card.redeemable = False
+    card.save(update_fields=["owner", "status", "redeemable"])
+
+    record_ledger(user, "credit", "trade_payout", trade.payout_ngn,
+                  balance_after=wallet.balance, reference=f"trade:{trade.id}",
+                  description=card.product_name)
+    record_profit(trade.profit_ngn, user=user, source="trade", reference=f"trade:{trade.id}")
+
+
+def trade_card(user, card_id, pin, *, ip=None):
+    """Cash out a giftcard. Pays payout_rate of the card's market value; the
+    rest is platform margin. Auto-completes unless above the review threshold."""
+    from .models import GiftCard, GiftCardTrade
+
+    if not user.has_transaction_pin:
+        raise GiftcardError("Set a transaction PIN first.", status=400)
+    if not user.check_transaction_pin(pin):
+        raise GiftcardError("Incorrect transaction PIN.", status=403)
+
+    cfg = get_rate_config()
+    rate = Decimal(str(cfg.trade_payout_rate))
+    threshold = Decimal(str(cfg.manual_review_threshold or 0))
+
+    with transaction.atomic():
+        try:
+            card = GiftCard.objects.select_for_update().get(id=card_id, owner=user)
+        except GiftCard.DoesNotExist:
+            raise GiftcardError("Card not found.", status=404)
+        if card.status != GiftCard.STATUS_OWNED or not card.redeemable:
+            raise GiftcardError("This card can't be traded (revealed, pending, or already traded).",
+                                status=400)
+        if not card.has_code:
+            raise GiftcardError("This card's code is still being issued. Try again shortly.", status=409)
+
+        value = (Decimal(str(card.face_value)) * currency_to_ngn_rate(card.currency)).quantize(Decimal("0.01"))
+        payout = (value * rate).quantize(Decimal("0.01"))
+        profit = (value - payout).quantize(Decimal("0.01"))
+
+        trade = GiftCardTrade(
+            user=user, card=card, face_value=card.face_value, currency=card.currency,
+            value_ngn=value, payout_rate=rate, payout_ngn=payout, profit_ngn=profit,
+        )
+
+        if threshold > 0 and payout >= threshold:
+            # Route to manual review — lock the card, pay nothing yet.
+            card.redeemable = False
+            card.save(update_fields=["redeemable"])
+            trade.status = GiftCardTrade.STATUS_PENDING_REVIEW
+            trade.save()
+            record_audit("giftcard_trade_review", user=user, ip_address=ip,
+                         metadata={"trade": trade.id})
+            return trade
+
+        trade.status = GiftCardTrade.STATUS_COMPLETED
+        trade.save()
+        _credit_payout_and_bank_card(user, card, trade)
+
+    record_audit("giftcard_trade", user=user, ip_address=ip, metadata={"trade": trade.id})
+    return trade
+
+
+def approve_trade(admin, trade_id):
+    """Admin approves a queued trade — pays out and banks the card."""
+    from .models import GiftCard, GiftCardTrade
+
+    with transaction.atomic():
+        trade = GiftCardTrade.objects.select_for_update().get(id=trade_id)
+        if trade.status != GiftCardTrade.STATUS_PENDING_REVIEW:
+            raise GiftcardError("Trade is not pending review.", status=400)
+        card = GiftCard.objects.select_for_update().get(pk=trade.card_id)
+        trade.status = GiftCardTrade.STATUS_COMPLETED
+        trade.reviewer = admin
+        trade.reviewed_at = timezone.now()
+        trade.save(update_fields=["status", "reviewer", "reviewed_at"])
+        _credit_payout_and_bank_card(trade.user, card, trade)
+    record_audit("giftcard_trade_approved", user=admin, metadata={"trade": trade.id})
+    return trade
+
+
+def reject_trade(admin, trade_id, reason=""):
+    """Admin rejects a queued trade — unlock the card, no payout."""
+    from .models import GiftCard, GiftCardTrade
+
+    with transaction.atomic():
+        trade = GiftCardTrade.objects.select_for_update().get(id=trade_id)
+        if trade.status != GiftCardTrade.STATUS_PENDING_REVIEW:
+            raise GiftcardError("Trade is not pending review.", status=400)
+        if trade.card_id:
+            card = GiftCard.objects.select_for_update().get(pk=trade.card_id)
+            card.redeemable = True
+            card.save(update_fields=["redeemable"])
+        trade.status = GiftCardTrade.STATUS_REJECTED
+        trade.reviewer = admin
+        trade.reason = (reason or "")[:255]
+        trade.reviewed_at = timezone.now()
+        trade.save(update_fields=["status", "reviewer", "reason", "reviewed_at"])
+    record_audit("giftcard_trade_rejected", user=admin, metadata={"trade": trade.id})
+    return trade
+

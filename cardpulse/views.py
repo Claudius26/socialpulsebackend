@@ -91,19 +91,23 @@ class CardPulseLoginView(generics.GenericAPIView):
     def post(self, request):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        from django.db.models import Q
+
         login = serializer.validated_data["login"].strip()
         password = serializer.validated_data["password"]
 
-        # Resolve username (@tag) OR email -> the account's email, scoped to CardPulse.
+        # Resolve email OR username/@tag -> the account. CardPulse users by realm;
+        # staff/admins are allowed in too (so one admin works across both apps).
+        realm_or_staff = Q(app=User.APP_CARDPULSE) | Q(is_staff=True)
         if "@" in login:
-            account = User.objects.filter(email__iexact=login, app=User.APP_CARDPULSE).first()
+            account = User.objects.filter(realm_or_staff, email__iexact=login).first()
         else:
-            account = User.objects.filter(
-                tag=services.normalize_tag(login), app=User.APP_CARDPULSE
+            account = User.objects.filter(realm_or_staff).filter(
+                Q(tag=services.normalize_tag(login)) | Q(username__iexact=login)
             ).first()
 
         user = authenticate(request, email=account.email, password=password) if account else None
-        if not user or getattr(user, "app", None) != User.APP_CARDPULSE:
+        if not user or (getattr(user, "app", None) != User.APP_CARDPULSE and not user.is_staff):
             return Response({"error": "Invalid credentials."}, status=status.HTTP_400_BAD_REQUEST)
 
         wallet = get_or_create_wallet(user, currency=get_currency_from_country(user.country))

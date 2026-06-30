@@ -205,16 +205,23 @@ class LoginView(generics.GenericAPIView):
 
     def post(self, request):
         try:
-            email = request.data.get("email")
+            # Accept email OR username in the same field.
+            identifier = (request.data.get("email") or request.data.get("login")
+                          or request.data.get("username") or "").strip()
             password = request.data.get("password")
 
-            if not email or not password:
+            if not identifier or not password:
                 return Response(
-                    {"error": "Email and password are required."},
+                    {"error": "Email/username and password are required."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            user = authenticate(request, email=email, password=password)
+            if "@" in identifier:
+                account = User.objects.filter(email__iexact=identifier).first()
+            else:
+                account = User.objects.filter(username__iexact=identifier).first()
+
+            user = authenticate(request, email=account.email, password=password) if account else None
             if not user:
                 return Response(
                     {"error": "Invalid credentials."},

@@ -11,7 +11,9 @@ class IsCardPulseUser(BasePermission):
 
     def has_permission(self, request, view):
         user = request.user
-        return bool(user and user.is_authenticated and getattr(user, "app", None) == "cardpulse")
+        # Staff/admins are allowed everywhere (one admin works across both apps).
+        return bool(user and user.is_authenticated
+                    and (getattr(user, "app", None) == "cardpulse" or user.is_staff))
 
 
 class IsVerifiedCardPulseUser(BasePermission):
@@ -20,6 +22,8 @@ class IsVerifiedCardPulseUser(BasePermission):
 
     def has_permission(self, request, view):
         user = request.user
+        if user and user.is_authenticated and user.is_staff:
+            return True  # admins bypass the realm + verification gate
         return bool(
             user and user.is_authenticated
             and getattr(user, "app", None) == "cardpulse"

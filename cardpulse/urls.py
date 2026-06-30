@@ -8,6 +8,9 @@ from .views import (
     SetTagView,
     SetTransactionPinView,
     ChangeTransactionPinView,
+    VerifyEmailView,
+    ResendOTPView,
+    ChangePasswordView,
 )
 
 app_name = "cardpulse"
@@ -15,9 +18,12 @@ app_name = "cardpulse"
 urlpatterns = [
     path("auth/register/", CardPulseRegisterView.as_view(), name="register"),
     path("auth/login/", CardPulseLoginView.as_view(), name="login"),
+    path("auth/verify-email/", VerifyEmailView.as_view(), name="verify-email"),
+    path("auth/resend-otp/", ResendOTPView.as_view(), name="resend-otp"),
     path("me/", CardPulseMeView.as_view(), name="me"),
-    path("tag/check/", TagCheckView.as_view(), name="tag-check"),
-    path("tag/", SetTagView.as_view(), name="set-tag"),
+    path("username/check/", TagCheckView.as_view(), name="tag-check"),
+    path("username/", SetTagView.as_view(), name="set-tag"),
+    path("password/change/", ChangePasswordView.as_view(), name="change-password"),
     path("pin/set/", SetTransactionPinView.as_view(), name="set-pin"),
     path("pin/change/", ChangeTransactionPinView.as_view(), name="change-pin"),
 ]

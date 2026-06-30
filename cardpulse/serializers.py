@@ -7,48 +7,58 @@ from . import services
 User = get_user_model()
 
 
-class CardPulseRegisterSerializer(serializers.ModelSerializer):
+class CardPulseRegisterSerializer(serializers.Serializer):
+    first_name = serializers.CharField(max_length=60)
+    last_name = serializers.CharField(max_length=60)
+    email = serializers.EmailField()
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
     password2 = serializers.CharField(write_only=True, required=True)
-    tag = serializers.CharField(required=False, allow_blank=True)
 
-    class Meta:
-        model = User
-        fields = ("full_name", "email", "phone", "country", "tag", "password", "password2")
+    def validate_email(self, value):
+        value = value.strip().lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("An account with this email already exists.")
+        return value
 
     def validate(self, attrs):
         if attrs["password"] != attrs["password2"]:
             raise serializers.ValidationError({"password": "Passwords do not match"})
-        tag = services.normalize_tag(attrs.get("tag"))
-        if tag:
-            if not services.is_valid_tag(tag):
-                raise serializers.ValidationError(
-                    {"tag": "Tag must be 3-20 chars: lowercase letters, numbers, underscore."}
-                )
-            if not services.is_tag_available(tag):
-                raise serializers.ValidationError({"tag": "That tag is already taken."})
-        attrs["tag"] = tag
         return attrs
 
     def create(self, validated_data):
-        validated_data.pop("password2")
-        password = validated_data.pop("password")
-        tag = validated_data.pop("tag", "") or services.suggest_tag(validated_data.get("email", ""))
+        first = validated_data["first_name"].strip()
+        last = validated_data["last_name"].strip()
+        email = validated_data["email"]
+        # Auto-generate a unique username (@tag) from the name; user can change it later.
+        tag = services.suggest_tag(f"{first}{last}" or email)
 
         user = User.objects.create(
-            **validated_data,
             app=User.APP_CARDPULSE,
+            email=email,
+            username=email,
+            first_name=first,
+            last_name=last,
+            full_name=f"{first} {last}".strip(),
             tag=tag,
-            username=validated_data.get("email"),
+            email_verified=False,
         )
-        user.set_password(password)
+        user.set_password(validated_data["password"])
         user.save()
         return user
 
 
 class CardPulseLoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    # Accept a username (@tag) OR an email in the same field.
+    login = serializers.CharField()
     password = serializers.CharField(write_only=True)
+
+
+class VerifyEmailSerializer(serializers.Serializer):
+    code = serializers.RegexField(r"^\d{6}$")
+
+
+class ResendOTPSerializer(serializers.Serializer):
+    pass
 
 
 class TagCheckSerializer(serializers.Serializer):
@@ -101,7 +111,20 @@ class ChangeTransactionPinSerializer(serializers.Serializer):
 
 class CardPulseUserSerializer(serializers.ModelSerializer):
     has_transaction_pin = serializers.BooleanField(read_only=True)
+    username = serializers.CharField(source="tag", read_only=True)
 
     class Meta:
         model = User
-        fields = ("id", "full_name", "email", "phone", "country", "tag", "has_transaction_pin")
+        fields = ("id", "first_name", "last_name", "full_name", "email", "phone",
+                  "country", "tag", "username", "email_verified", "has_transaction_pin")
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True, validators=[validate_password])
+
+    def validate_old_password(self, value):
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Current password is incorrect.")
+        return value

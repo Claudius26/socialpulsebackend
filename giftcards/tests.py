@@ -59,7 +59,8 @@ class FakeProvider:
 
 
 def make_cardpulse_user(email="cp@cardpulse.test", tag="cp"):
-    u = User(email=email, username=email, full_name="CP", app=User.APP_CARDPULSE, tag=tag)
+    u = User(email=email, username=email, full_name="CP", app=User.APP_CARDPULSE, tag=tag,
+             email_verified=True)
     u.set_password("StrongPass123")
     u.save()
     return u

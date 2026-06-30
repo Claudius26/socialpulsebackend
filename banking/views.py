@@ -1,7 +1,7 @@
 from rest_framework import generics
 from rest_framework.response import Response
 
-from cardpulse.permissions import IsCardPulseUser
+from cardpulse.permissions import IsCardPulseUser, IsVerifiedCardPulseUser
 from cardpulse.services import client_ip
 
 from . import services
@@ -34,7 +34,7 @@ class ResolveAccountView(generics.GenericAPIView):
 
 
 class InitiateWithdrawalView(generics.GenericAPIView):
-    permission_classes = [IsCardPulseUser]
+    permission_classes = [IsVerifiedCardPulseUser]
     serializer_class = InitiateWithdrawalSerializer
     throttle_scope = "cardpulse_money"
 
@@ -61,7 +61,7 @@ class MyWithdrawalsView(generics.ListAPIView):
 
 
 class DepositInitView(generics.GenericAPIView):
-    permission_classes = [IsCardPulseUser]
+    permission_classes = [IsVerifiedCardPulseUser]
     serializer_class = DepositSerializer
     throttle_scope = "cardpulse_money"
 

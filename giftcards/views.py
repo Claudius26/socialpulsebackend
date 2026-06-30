@@ -4,7 +4,7 @@ import uuid
 from rest_framework import generics
 from rest_framework.response import Response
 
-from cardpulse.permissions import IsCardPulseUser
+from cardpulse.permissions import IsCardPulseUser, IsVerifiedCardPulseUser
 from cardpulse.services import client_ip
 from common.providers import get_giftcard_provider, ProviderError
 from common.cache_utils import get_or_set_cache
@@ -82,7 +82,7 @@ class GiftcardCountriesView(generics.GenericAPIView):
 
 class PurchaseGiftcardView(generics.GenericAPIView):
     """Buy (mint) a giftcard, charged to the CardPulse cash wallet."""
-    permission_classes = [IsCardPulseUser]
+    permission_classes = [IsVerifiedCardPulseUser]
     serializer_class = PurchaseSerializer
     throttle_scope = "cardpulse_money"
 
@@ -130,7 +130,7 @@ class GiftcardDetailView(generics.RetrieveAPIView):
 
 class RevealGiftcardView(generics.GenericAPIView):
     """Reveal a card's code (requires txn PIN). Makes the card non-tradeable."""
-    permission_classes = [IsCardPulseUser]
+    permission_classes = [IsVerifiedCardPulseUser]
     serializer_class = RevealSerializer
 
     def post(self, request, pk):
@@ -147,7 +147,7 @@ class RevealGiftcardView(generics.GenericAPIView):
 
 class TradeGiftcardView(generics.GenericAPIView):
     """Cash out a card. Returns ONLY the payout the trader receives."""
-    permission_classes = [IsCardPulseUser]
+    permission_classes = [IsVerifiedCardPulseUser]
     serializer_class = TradeSerializer
     throttle_scope = "cardpulse_money"
 

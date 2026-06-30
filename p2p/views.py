@@ -2,7 +2,7 @@ from django.db.models import Q
 from rest_framework import generics
 from rest_framework.response import Response
 
-from cardpulse.permissions import IsCardPulseUser
+from cardpulse.permissions import IsCardPulseUser, IsVerifiedCardPulseUser
 from cardpulse.services import client_ip
 
 from . import services
@@ -20,7 +20,7 @@ class TagLookupView(generics.GenericAPIView):
 
 
 class SendCashView(generics.GenericAPIView):
-    permission_classes = [IsCardPulseUser]
+    permission_classes = [IsVerifiedCardPulseUser]
     serializer_class = SendCashSerializer
     throttle_scope = "cardpulse_money"
 
@@ -39,7 +39,7 @@ class SendCashView(generics.GenericAPIView):
 
 
 class SendGiftcardView(generics.GenericAPIView):
-    permission_classes = [IsCardPulseUser]
+    permission_classes = [IsVerifiedCardPulseUser]
     serializer_class = SendGiftcardSerializer
     throttle_scope = "cardpulse_money"
 

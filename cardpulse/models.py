@@ -108,6 +108,32 @@ class ProfitEntry(models.Model):
         return f"profit {self.amount} {self.currency} ({self.source})"
 
 
+class EmailOTP(models.Model):
+    """Short-lived, hashed one-time codes for email verification / resets."""
+    PURPOSE_VERIFY = "verify"
+    PURPOSE_RESET = "reset"
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="email_otps")
+    purpose = models.CharField(max_length=16, default=PURPOSE_VERIFY)
+    code_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "purpose", "-created_at"])]
+        ordering = ["-created_at"]
+
+    def set_code(self, raw):
+        from django.contrib.auth.hashers import make_password
+        self.code_hash = make_password(str(raw))
+
+    def check_code(self, raw) -> bool:
+        from django.contrib.auth.hashers import check_password
+        return check_password(str(raw), self.code_hash)
+
+
 class AuditLog(models.Model):
     """Who did what, when, from where — for sensitive actions."""
 

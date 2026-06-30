@@ -5,13 +5,14 @@ from django.urls import reverse
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import RateConfig, AuditLog
+from .models import RateConfig, AuditLog, EmailOTP
 
 User = get_user_model()
 
 
-def make_user(email, app=User.APP_CARDPULSE, tag=None, password="StrongPass123"):
-    u = User(email=email, username=email, full_name="Test User", app=app, tag=tag)
+def make_user(email, app=User.APP_CARDPULSE, tag=None, password="StrongPass123", verified=True):
+    u = User(email=email, username=email, full_name="Test User", app=app, tag=tag,
+             email_verified=verified)
     u.set_password(password)
     u.save()
     return u
@@ -24,50 +25,58 @@ def auth(user):
 
 
 class RegistrationTests(APITestCase):
-    def test_register_creates_cardpulse_user_with_wallet_and_token(self):
-        res = self.client.post(reverse("cardpulse:register"), {
-            "full_name": "Ada Lovelace",
+    def _payload(self, **over):
+        body = {
+            "first_name": "Ada", "last_name": "Lovelace",
             "email": "ada@cardpulse.test",
-            "password": "StrongPass123",
-            "password2": "StrongPass123",
-            "tag": "ada",
-        }, format="json")
+            "password": "StrongPass123", "password2": "StrongPass123",
+        }
+        body.update(over)
+        return body
+
+    def test_register_creates_user_with_auto_username_wallet_token(self):
+        res = self.client.post(reverse("cardpulse:register"), self._payload(), format="json")
         self.assertEqual(res.status_code, 201, res.data)
         self.assertIn("token", res.data)
-        self.assertEqual(res.data["user"]["tag"], "ada")
-        self.assertEqual(res.data["user"]["wallet"]["balance"], 0.0)
+        self.assertTrue(res.data["user"]["tag"])             # auto-generated username
+        self.assertEqual(res.data["user"]["username"], res.data["user"]["tag"])
+        self.assertFalse(res.data["user"]["email_verified"])  # must verify email
         user = User.objects.get(email="ada@cardpulse.test")
+        self.assertEqual(user.full_name, "Ada Lovelace")
         self.assertEqual(user.app, User.APP_CARDPULSE)
         self.assertTrue(hasattr(user, "wallet"))
 
-    def test_register_auto_generates_tag_when_missing(self):
-        res = self.client.post(reverse("cardpulse:register"), {
-            "full_name": "No Tag",
-            "email": "notag@cardpulse.test",
-            "password": "StrongPass123",
-            "password2": "StrongPass123",
-        }, format="json")
-        self.assertEqual(res.status_code, 201, res.data)
-        self.assertTrue(res.data["user"]["tag"])
+    def test_register_sends_otp_email(self):
+        self.client.post(reverse("cardpulse:register"), self._payload(), format="json")
+        user = User.objects.get(email="ada@cardpulse.test")
+        self.assertTrue(EmailOTP.objects.filter(user=user, purpose="verify", used=False).exists())
 
-    def test_register_rejects_taken_tag(self):
-        make_user("first@cardpulse.test", tag="taken")
-        res = self.client.post(reverse("cardpulse:register"), {
-            "full_name": "Second",
-            "email": "second@cardpulse.test",
-            "password": "StrongPass123",
-            "password2": "StrongPass123",
-            "tag": "taken",
-        }, format="json")
+    def test_register_rejects_duplicate_email(self):
+        make_user("dupe@cardpulse.test", tag="dupe")
+        res = self.client.post(reverse("cardpulse:register"),
+                               self._payload(email="dupe@cardpulse.test"), format="json")
         self.assertEqual(res.status_code, 400)
-        self.assertIn("tag", res.data)
+        self.assertIn("email", res.data)
+
+    def test_passwords_must_match(self):
+        res = self.client.post(reverse("cardpulse:register"),
+                               self._payload(password2="different"), format="json")
+        self.assertEqual(res.status_code, 400)
 
 
 class LoginRealmIsolationTests(APITestCase):
-    def test_cardpulse_user_can_login(self):
+    def test_login_with_email(self):
         make_user("cp@cardpulse.test", app=User.APP_CARDPULSE, tag="cp")
         res = self.client.post(reverse("cardpulse:login"), {
-            "email": "cp@cardpulse.test", "password": "StrongPass123",
+            "login": "cp@cardpulse.test", "password": "StrongPass123",
+        }, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIn("token", res.data)
+
+    def test_login_with_username(self):
+        make_user("cpu@cardpulse.test", app=User.APP_CARDPULSE, tag="ada_l")
+        res = self.client.post(reverse("cardpulse:login"), {
+            "login": "ada_l", "password": "StrongPass123",
         }, format="json")
         self.assertEqual(res.status_code, 200, res.data)
         self.assertIn("token", res.data)
@@ -75,7 +84,7 @@ class LoginRealmIsolationTests(APITestCase):
     def test_socialpulse_user_cannot_login_via_cardpulse(self):
         make_user("web@socialpulse.test", app=User.APP_SOCIALPULSE)
         res = self.client.post(reverse("cardpulse:login"), {
-            "email": "web@socialpulse.test", "password": "StrongPass123",
+            "login": "web@socialpulse.test", "password": "StrongPass123",
         }, format="json")
         self.assertEqual(res.status_code, 400)
 
@@ -150,7 +159,52 @@ class RateConfigTests(APITestCase):
 class AuditTests(APITestCase):
     def test_register_writes_audit_log(self):
         self.client.post(reverse("cardpulse:register"), {
-            "full_name": "Audit", "email": "audit@cardpulse.test",
-            "password": "StrongPass123", "password2": "StrongPass123", "tag": "audituser",
+            "first_name": "Aud", "last_name": "It", "email": "audit@cardpulse.test",
+            "password": "StrongPass123", "password2": "StrongPass123",
         }, format="json")
         self.assertTrue(AuditLog.objects.filter(action="cardpulse_register").exists())
+
+
+class EmailVerificationTests(APITestCase):
+    def _register(self, email="v@cardpulse.test"):
+        self.client.post(reverse("cardpulse:register"), {
+            "first_name": "Ver", "last_name": "Ify", "email": email,
+            "password": "StrongPass123", "password2": "StrongPass123",
+        }, format="json")
+        return User.objects.get(email=email)
+
+    def test_verify_with_correct_code(self):
+        user = self._register()
+        otp = EmailOTP.objects.filter(user=user, used=False).first()
+        # We only stored the hash; reissue a known code to test the verify path.
+        from cardpulse import email_utils
+        code = email_utils.issue_otp(user)
+        res = self.client.post(reverse("cardpulse:verify-email"), {"code": code},
+                               format="json", HTTP_AUTHORIZATION=auth(user))
+        self.assertEqual(res.status_code, 200, res.data)
+        user.refresh_from_db()
+        self.assertTrue(user.email_verified)
+
+    def test_verify_with_wrong_code_fails(self):
+        user = self._register("w2@cardpulse.test")
+        res = self.client.post(reverse("cardpulse:verify-email"), {"code": "000000"},
+                               format="json", HTTP_AUTHORIZATION=auth(user))
+        self.assertEqual(res.status_code, 400)
+        user.refresh_from_db()
+        self.assertFalse(user.email_verified)
+
+    def test_unverified_user_blocked_from_money_action(self):
+        user = self._register("blocked@cardpulse.test")
+        # buying requires a verified email
+        res = self.client.post(reverse("giftcards:buy"), {"product_id": 1, "face_value": "10"},
+                               format="json", HTTP_AUTHORIZATION=auth(user))
+        self.assertEqual(res.status_code, 403)
+
+    def test_change_password(self):
+        user = make_user("pw@cardpulse.test", tag="pwuser")
+        res = self.client.post(reverse("cardpulse:change-password"), {
+            "old_password": "StrongPass123", "new_password": "NewStrongPass456",
+        }, format="json", HTTP_AUTHORIZATION=auth(user))
+        self.assertEqual(res.status_code, 200, res.data)
+        user.refresh_from_db()
+        self.assertTrue(user.check_password("NewStrongPass456"))

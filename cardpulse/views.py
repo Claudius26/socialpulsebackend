@@ -8,7 +8,11 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from users.services import get_or_create_wallet
 from users.views import get_currency_from_country
 
+from django.utils import timezone
+
 from . import services
+from . import email_utils
+from .models import EmailOTP
 from .permissions import IsCardPulseUser
 from .serializers import (
     CardPulseRegisterSerializer,
@@ -18,6 +22,9 @@ from .serializers import (
     SetTagSerializer,
     SetTransactionPinSerializer,
     ChangeTransactionPinSerializer,
+    VerifyEmailSerializer,
+    ResendOTPSerializer,
+    ChangePasswordSerializer,
 )
 
 User = get_user_model()
@@ -65,9 +72,13 @@ class CardPulseRegisterView(generics.GenericAPIView):
         currency = get_currency_from_country(user.country)
         wallet = get_or_create_wallet(user, currency=currency)
 
+        # Send the email-verification OTP. Don't fail signup if SMTP hiccups —
+        # the user can resend from the verification screen.
+        email_utils.issue_and_send(user, EmailOTP.PURPOSE_VERIFY)
+
         services.record_audit(
             "cardpulse_register", user=user, ip_address=services.client_ip(request),
-            detail=f"tag=@{user.tag}",
+            detail=f"@{user.tag}",
         )
         return auth_response(user, wallet, http_status=status.HTTP_201_CREATED)
 
@@ -80,19 +91,86 @@ class CardPulseLoginView(generics.GenericAPIView):
     def post(self, request):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data["email"]
+        login = serializer.validated_data["login"].strip()
         password = serializer.validated_data["password"]
 
-        user = authenticate(request, email=email, password=password)
-        # Realm isolation: a SocialPulse account cannot log in through CardPulse.
+        # Resolve username (@tag) OR email -> the account's email, scoped to CardPulse.
+        if "@" in login:
+            account = User.objects.filter(email__iexact=login, app=User.APP_CARDPULSE).first()
+        else:
+            account = User.objects.filter(
+                tag=services.normalize_tag(login), app=User.APP_CARDPULSE
+            ).first()
+
+        user = authenticate(request, email=account.email, password=password) if account else None
         if not user or getattr(user, "app", None) != User.APP_CARDPULSE:
             return Response({"error": "Invalid credentials."}, status=status.HTTP_400_BAD_REQUEST)
 
         wallet = get_or_create_wallet(user, currency=get_currency_from_country(user.country))
-        services.record_audit(
-            "cardpulse_login", user=user, ip_address=services.client_ip(request),
-        )
+        services.record_audit("cardpulse_login", user=user, ip_address=services.client_ip(request))
         return auth_response(user, wallet)
+
+
+class VerifyEmailView(generics.GenericAPIView):
+    permission_classes = [IsCardPulseUser]
+    serializer_class = VerifyEmailSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        if user.email_verified:
+            return Response({"email_verified": True}, status=200)
+
+        otp = EmailOTP.objects.filter(
+            user=user, purpose=EmailOTP.PURPOSE_VERIFY, used=False
+        ).order_by("-created_at").first()
+        if not otp or otp.expires_at < timezone.now():
+            return Response({"error": "Code expired. Request a new one."}, status=400)
+        if otp.attempts >= 5:
+            return Response({"error": "Too many attempts. Request a new code."}, status=429)
+
+        if not otp.check_code(serializer.validated_data["code"]):
+            otp.attempts += 1
+            otp.save(update_fields=["attempts"])
+            return Response({"error": "Incorrect code."}, status=400)
+
+        otp.used = True
+        otp.save(update_fields=["used"])
+        user.email_verified = True
+        user.save(update_fields=["email_verified"])
+        services.record_audit("cardpulse_email_verified", user=user)
+        return Response({"email_verified": True}, status=200)
+
+
+class ResendOTPView(generics.GenericAPIView):
+    permission_classes = [IsCardPulseUser]
+    serializer_class = ResendOTPSerializer
+
+    def post(self, request):
+        user = request.user
+        if user.email_verified:
+            return Response({"email_verified": True}, status=200)
+        # Cooldown: don't spam.
+        last = EmailOTP.objects.filter(user=user, purpose=EmailOTP.PURPOSE_VERIFY).order_by("-created_at").first()
+        if last and (timezone.now() - last.created_at).total_seconds() < email_utils.RESEND_COOLDOWN_SECONDS:
+            return Response({"error": "Please wait a minute before requesting another code."}, status=429)
+        email_utils.issue_and_send(user, EmailOTP.PURPOSE_VERIFY)
+        return Response({"message": "A new code has been sent."}, status=200)
+
+
+class ChangePasswordView(generics.GenericAPIView):
+    permission_classes = [IsCardPulseUser]
+    serializer_class = ChangePasswordSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        user.set_password(serializer.validated_data["new_password"])
+        user.save(update_fields=["password"])
+        services.record_audit("cardpulse_change_password", user=user, ip_address=services.client_ip(request))
+        return Response({"message": "Password updated."}, status=200)
 
 
 class CardPulseMeView(generics.GenericAPIView):

@@ -29,6 +29,9 @@ class User(AbstractUser):
     # trade, send, withdraw. Never stored or returned in plaintext.
     transaction_pin = models.CharField(max_length=128, blank=True, null=True)
 
+    # CardPulse: must verify their email via OTP before using the app.
+    email_verified = models.BooleanField(default=False)
+
     groups = models.ManyToManyField(
         'auth.Group',
         related_name='custom_user_groups',

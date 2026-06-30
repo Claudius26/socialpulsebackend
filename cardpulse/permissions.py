@@ -12,3 +12,16 @@ class IsCardPulseUser(BasePermission):
     def has_permission(self, request, view):
         user = request.user
         return bool(user and user.is_authenticated and getattr(user, "app", None) == "cardpulse")
+
+
+class IsVerifiedCardPulseUser(BasePermission):
+    """CardPulse user who has verified their email — required for money actions."""
+    message = "Verify your email to use this feature."
+
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(
+            user and user.is_authenticated
+            and getattr(user, "app", None) == "cardpulse"
+            and getattr(user, "email_verified", False)
+        )

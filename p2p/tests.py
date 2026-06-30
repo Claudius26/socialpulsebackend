@@ -16,7 +16,7 @@ User = get_user_model()
 
 def cp_user(email, tag, pin="1234"):
     u = User(email=email, username=email, full_name=email.split("@")[0],
-             app=User.APP_CARDPULSE, tag=tag)
+             app=User.APP_CARDPULSE, tag=tag, email_verified=True)
     u.set_password("StrongPass123")
     if pin:
         u.set_transaction_pin(pin)

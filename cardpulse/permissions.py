@@ -1,31 +1,37 @@
 from rest_framework.permissions import BasePermission
 
 
-class IsCardPulseUser(BasePermission):
-    """Allow only authenticated users in the CardPulse realm.
+def _is_admin(user) -> bool:
+    return bool(getattr(user, "is_staff", False) or getattr(user, "is_superuser", False))
 
-    Keeps SocialPulse (web) accounts out of CardPulse endpoints even if they
-    present a valid token — the two user bases stay isolated.
+
+class IsCardPulseUser(BasePermission):
+    """Allow only authenticated CardPulse customers.
+
+    SocialPulse (web) accounts and ADMIN/staff accounts are kept out of the app
+    entirely — admins manage everything from the web dashboard, never the app.
+    (An admin who wants to use the app must register a separate user account.)
     """
     message = "This endpoint is only available to CardPulse accounts."
 
     def has_permission(self, request, view):
         user = request.user
-        # Staff/admins are allowed everywhere (one admin works across both apps).
-        return bool(user and user.is_authenticated
-                    and (getattr(user, "app", None) == "cardpulse" or user.is_staff))
+        return bool(
+            user and user.is_authenticated
+            and getattr(user, "app", None) == "cardpulse"
+            and not _is_admin(user)
+        )
 
 
 class IsVerifiedCardPulseUser(BasePermission):
-    """CardPulse user who has verified their email — required for money actions."""
+    """CardPulse customer who has verified their email — required for money actions."""
     message = "Verify your email to use this feature."
 
     def has_permission(self, request, view):
         user = request.user
-        if user and user.is_authenticated and user.is_staff:
-            return True  # admins bypass the realm + verification gate
         return bool(
             user and user.is_authenticated
             and getattr(user, "app", None) == "cardpulse"
+            and not _is_admin(user)
             and getattr(user, "email_verified", False)
         )

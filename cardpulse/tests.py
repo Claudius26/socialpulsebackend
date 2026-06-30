@@ -229,3 +229,31 @@ class SetPhoneTests(APITestCase):
         res = self.client.post(reverse("cardpulse:set-phone"), {"phone": "+2348012345678"},
                                format="json")
         self.assertIn(res.status_code, (401, 403))
+
+
+class AdminBlockedFromAppTests(APITestCase):
+    """Admin/staff accounts are web-dashboard only — never allowed in the app."""
+
+    def test_admin_cannot_login_to_app(self):
+        admin = make_user("boss@cardpulse.test", app=User.APP_CARDPULSE, tag="boss")
+        admin.is_staff = True
+        admin.save(update_fields=["is_staff"])
+        res = self.client.post(reverse("cardpulse:login"), {
+            "login": "boss@cardpulse.test", "password": "StrongPass123",
+        }, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("web dashboard", res.data["error"])
+
+    def test_admin_token_cannot_access_app_endpoints(self):
+        admin = make_user("boss2@cardpulse.test", app=User.APP_CARDPULSE, tag="boss2")
+        admin.is_superuser = True
+        admin.save(update_fields=["is_superuser"])
+        res = self.client.get(reverse("cardpulse:me"), HTTP_AUTHORIZATION=auth(admin))
+        self.assertEqual(res.status_code, 403)
+
+    def test_normal_user_still_logs_in(self):
+        make_user("normal@cardpulse.test", app=User.APP_CARDPULSE, tag="normaluser")
+        res = self.client.post(reverse("cardpulse:login"), {
+            "login": "normal@cardpulse.test", "password": "StrongPass123",
+        }, format="json")
+        self.assertEqual(res.status_code, 200, res.data)

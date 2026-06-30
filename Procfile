@@ -1,1 +1,1 @@
-web: gunicorn socialpulse.wsgi --bind 0.0.0.0:$PORT --workers 3
+web: python manage.py migrate --noinput && gunicorn socialpulse.wsgi --bind 0.0.0.0:$PORT --workers 3

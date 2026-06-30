@@ -25,9 +25,13 @@ class Transfer(models.Model):
     )
     kind = models.CharField(max_length=10, choices=KIND_CHOICES)
 
-    # cash transfers
+    # cash transfers — sender side (amount_ngn is the SENDER's debit, in `currency`)
     amount_ngn = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     currency = models.CharField(max_length=5, default="NGN")
+    # recipient side — what the recipient was credited, in their own currency.
+    # Differs from the sender amount only on a cross-currency transfer.
+    recv_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    recv_currency = models.CharField(max_length=5, default="NGN")
 
     # giftcard transfers
     card = models.ForeignKey(

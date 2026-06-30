@@ -9,10 +9,16 @@ from decimal import Decimal, InvalidOperation
 from django.db import transaction
 
 from cardpulse.services import find_user_by_tag, record_ledger, record_audit
+from common.fx import convert, FxError
 from giftcards.models import GiftCard
 from users.models import Wallet
 
 from .models import Transfer
+
+
+def _wallet_currency(user):
+    w = getattr(user, "wallet", None)
+    return (getattr(w, "currency", None) or "NGN") if w else "NGN"
 
 
 class P2PError(Exception):
@@ -58,7 +64,17 @@ def lookup(tag):
 def send_cash(sender, tag, amount, pin, *, note="", ip=None) -> Transfer:
     _require_pin(sender, pin)
     recipient = _resolve_recipient(sender, tag)
-    amount = _amount(amount)
+    amount = _amount(amount)  # in the SENDER's wallet currency
+
+    # If the two wallets are in different currencies, convert: the sender is
+    # debited their amount, the recipient credited the equivalent in THEIR
+    # currency. Same-currency transfers are an exact identity (no rate needed).
+    scur = _wallet_currency(sender)
+    rcur = _wallet_currency(recipient)
+    try:
+        recv_amount = convert(amount, scur, rcur)
+    except FxError:
+        raise P2PError("Transfers are temporarily unavailable. Please try again later.", status=503)
 
     with transaction.atomic():
         # Lock both wallets in a consistent order to avoid deadlock.
@@ -76,21 +92,24 @@ def send_cash(sender, tag, amount, pin, *, note="", ip=None) -> Transfer:
             raise P2PError("Insufficient wallet balance.", status=402)
 
         sw.balance = Decimal(str(sw.balance)) - amount
-        rw.balance = Decimal(str(rw.balance)) + amount
+        rw.balance = Decimal(str(rw.balance)) + recv_amount
         sw.save(update_fields=["balance"])
         rw.save(update_fields=["balance"])
 
         transfer = Transfer.objects.create(
             sender=sender, recipient=recipient, kind=Transfer.KIND_CASH,
-            amount_ngn=amount, note=note[:140],
+            amount_ngn=amount, currency=scur,
+            recv_amount=recv_amount, recv_currency=rcur, note=note[:140],
         )
-        record_ledger(sender, "debit", "transfer_out", amount, balance_after=sw.balance,
+        record_ledger(sender, "debit", "transfer_out", amount, currency=scur,
+                      balance_after=sw.balance,
                       reference=f"transfer:{transfer.id}", description=f"To @{recipient.tag}")
-        record_ledger(recipient, "credit", "transfer_in", amount, balance_after=rw.balance,
+        record_ledger(recipient, "credit", "transfer_in", recv_amount, currency=rcur,
+                      balance_after=rw.balance,
                       reference=f"transfer:{transfer.id}", description=f"From @{sender.tag}")
 
     record_audit("p2p_send_cash", user=sender, ip_address=ip,
-                 detail=f"{amount} -> @{recipient.tag}", metadata={"transfer": transfer.id})
+                 detail=f"{amount} {scur} -> @{recipient.tag}", metadata={"transfer": transfer.id})
     return transfer
 
 

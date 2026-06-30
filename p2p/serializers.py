@@ -23,6 +23,11 @@ class SendGiftcardSerializer(serializers.Serializer):
 class TransferSerializer(serializers.ModelSerializer):
     direction = serializers.SerializerMethodField()
     counterparty = serializers.SerializerMethodField()
+    # amount_ngn / currency are shown from the VIEWER's side: the sender sees the
+    # amount they sent (their currency); the recipient sees what they received
+    # (their currency). Differs only on a cross-currency transfer.
+    amount_ngn = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
     card = GiftCardSerializer(read_only=True)
 
     class Meta:
@@ -39,6 +44,18 @@ class TransferSerializer(serializers.ModelSerializer):
     def get_direction(self, obj):
         me = self._me()
         return "out" if me and obj.sender_id == me.id else "in"
+
+    def get_amount_ngn(self, obj):
+        me = self._me()
+        if me and obj.recipient_id == me.id:
+            return obj.recv_amount if obj.recv_amount is not None else obj.amount_ngn
+        return obj.amount_ngn
+
+    def get_currency(self, obj):
+        me = self._me()
+        if me and obj.recipient_id == me.id:
+            return obj.recv_currency or obj.currency
+        return obj.currency
 
     def get_counterparty(self, obj):
         me = self._me()

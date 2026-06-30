@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
@@ -164,3 +165,52 @@ class HistoryTests(APITestCase):
         res_in = self.client.get(reverse("p2p:history"), HTTP_AUTHORIZATION=auth(recipient))
         self.assertEqual(res_in.data[0]["direction"], "in")
         self.assertEqual(res_in.data[0]["counterparty"]["tag"], "hist1")
+
+
+class CrossCurrencyTransferTests(APITestCase):
+    """A GHS sender to an NGN recipient: sender debited GHS, recipient credited
+    the NGN equivalent; each side's ledger is in its own currency."""
+
+    def setUp(self):
+        self.sender = cp_user("ghsend@cardpulse.test", "ghsend")
+        sw = get_or_create_wallet(self.sender)
+        sw.currency = "GHS"; sw.balance = Decimal("1000"); sw.save()
+        self.sender.refresh_from_db()
+
+        self.recipient = cp_user("ngrecv@cardpulse.test", "ngrecv")
+        rw = get_or_create_wallet(self.recipient)
+        rw.currency = "NGN"; rw.balance = Decimal("0"); rw.save()
+
+    @patch("p2p.services.convert", return_value=Decimal("4000.00"))  # 200 GHS -> 4000 NGN
+    def test_cross_currency_credits_recipient_in_their_currency(self, _conv):
+        res = self.client.post(reverse("p2p:send-cash"), {
+            "tag": "ngrecv", "amount": "200", "pin": "1234",
+        }, format="json", HTTP_AUTHORIZATION=auth(self.sender))
+        self.assertEqual(res.status_code, 201, res.data)
+
+        self.sender.wallet.refresh_from_db()
+        self.recipient.wallet.refresh_from_db()
+        self.assertEqual(self.sender.wallet.balance, Decimal("800.00"))   # 1000 - 200 GHS
+        self.assertEqual(self.recipient.wallet.balance, Decimal("4000.00"))  # + 4000 NGN
+
+        from cardpulse.models import LedgerEntry
+        out = LedgerEntry.objects.get(user=self.sender, kind="transfer_out")
+        self.assertEqual((out.amount, out.currency), (Decimal("200.00"), "GHS"))
+        inc = LedgerEntry.objects.get(user=self.recipient, kind="transfer_in")
+        self.assertEqual((inc.amount, inc.currency), (Decimal("4000.00"), "NGN"))
+
+    @patch("p2p.services.convert", return_value=Decimal("4000.00"))
+    def test_history_shows_each_side_its_own_amount(self, _conv):
+        self.client.post(reverse("p2p:send-cash"), {
+            "tag": "ngrecv", "amount": "200", "pin": "1234",
+        }, format="json", HTTP_AUTHORIZATION=auth(self.sender))
+
+        s_hist = self.client.get(reverse("p2p:history"), HTTP_AUTHORIZATION=auth(self.sender)).data
+        self.assertEqual(s_hist[0]["direction"], "out")
+        self.assertEqual(str(s_hist[0]["amount_ngn"]), "200.00")
+        self.assertEqual(s_hist[0]["currency"], "GHS")
+
+        r_hist = self.client.get(reverse("p2p:history"), HTTP_AUTHORIZATION=auth(self.recipient)).data
+        self.assertEqual(r_hist[0]["direction"], "in")
+        self.assertEqual(str(r_hist[0]["amount_ngn"]), "4000.00")
+        self.assertEqual(r_hist[0]["currency"], "NGN")

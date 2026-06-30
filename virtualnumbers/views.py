@@ -56,6 +56,12 @@ def wallet_available(wallet):
     return safe_decimal(wallet.balance) - safe_decimal(getattr(wallet, "reserved_balance", "0"))
 
 
+# Shown to users whenever the PROVIDER (ZapOTP) fails — including when OUR
+# provider balance is low. Never expose the raw provider message: a customer
+# must not learn anything about our funding/operations.
+SERVICE_UNAVAILABLE = "This service is temporarily unavailable. Please try again later."
+
+
 def user_currency(request):
     """The wallet currency of the requesting user (defaults to NGN)."""
     u = getattr(request, "user", None)
@@ -78,11 +84,11 @@ class GetServicesView(generics.GenericAPIView):
 
         try:
             data = get_otp_provider().list_pools(country, service)
-        except ProviderError as e:
-            return Response({"error": str(e)}, status=500)
+        except ProviderError:
+            return Response({"error": SERVICE_UNAVAILABLE}, status=503)
 
-        if data.get("status") != "success" or "data" not in data:
-            return Response({"error": data}, status=400)
+        if not isinstance(data, dict) or data.get("status") != "success" or "data" not in data:
+            return Response({"error": SERVICE_UNAVAILABLE}, status=503)
 
         profit = safe_decimal(getattr(settings, "VIRTUALNUMBER_PROFIT_MARGIN", 0.3))
 
@@ -133,11 +139,12 @@ class PurchaseNumberView(generics.GenericAPIView):
 
         try:
             services_data = get_otp_provider().list_pools(country, service)
-        except ProviderError as e:
-            return Response({"error": f"Failed to fetch latest pools: {str(e)}"}, status=500)
+        except ProviderError:
+            return Response({"error": SERVICE_UNAVAILABLE}, status=503)
 
-        if services_data.get("status") != "success" or "data" not in services_data:
-            return Response({"error": services_data}, status=400)
+        if not isinstance(services_data, dict) or services_data.get("status") != "success" \
+                or "data" not in services_data:
+            return Response({"error": SERVICE_UNAVAILABLE}, status=503)
 
         selected_pool = None
         for item in services_data.get("data", []):
@@ -164,13 +171,19 @@ class PurchaseNumberView(generics.GenericAPIView):
         if wallet_available(wallet) < final_price:
             return Response({"error": "Insufficient wallet balance"}, status=400)
 
+        import logging
+        logger = logging.getLogger(__name__)
         try:
             order_data = get_otp_provider().rent(country, service, pool_id, provider)
         except ProviderError as e:
-            return Response({"error": f"ZapOTP order failed: {str(e)}"}, status=500)
+            logger.warning("Provider rent failed (%s/%s): %s", country, service, e)
+            return Response({"error": SERVICE_UNAVAILABLE}, status=503)
 
-        if order_data.get("status") != "success":
-            return Response({"error": order_data}, status=400)
+        if not isinstance(order_data, dict) or order_data.get("status") != "success":
+            # e.g. our provider balance is low — log it, but show the user nothing
+            # about our operations.
+            logger.warning("Provider rent rejected (%s/%s): %s", country, service, order_data)
+            return Response({"error": SERVICE_UNAVAILABLE}, status=503)
 
         order = order_data.get("data") or {}
         order_id = order.get("order_id")

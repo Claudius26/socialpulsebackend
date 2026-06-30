@@ -488,6 +488,8 @@ def admin_overview(request):
         "users": User.objects.count(),
         "numbers": {
             "total": numbers.count(),
+            # "sold" = successfully purchased numbers, excluding cancelled/failed.
+            "sold": numbers.exclude(status__in=["Cancelled", "Failed"]).count(),
             "api": numbers.filter(funding_source="api").count(),
             "normal": numbers.filter(funding_source="wallet").count(),
             "sms_received": numbers.filter(sms_received_at__isnull=False).count(),

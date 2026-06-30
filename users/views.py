@@ -401,14 +401,19 @@ def admin_update_profile(request):
 
     username = request.data.get("username", "").strip()
     full_name = request.data.get("full_name", "").strip()
+    email = (request.data.get("email") or "").strip()
 
     if username:
-        existing_user = User.objects.filter(username=username).exclude(id=user.id).first()
-        if existing_user:
+        if User.objects.filter(username__iexact=username).exclude(id=user.id).exists():
             return Response({"error": "Username already exists"}, status=400)
         user.username = username
 
-    if hasattr(user, "full_name"):
+    if email:
+        if User.objects.filter(email__iexact=email).exclude(id=user.id).exists():
+            return Response({"error": "Email already in use"}, status=400)
+        user.email = email
+
+    if full_name and hasattr(user, "full_name"):
         user.full_name = full_name
 
     user.save()

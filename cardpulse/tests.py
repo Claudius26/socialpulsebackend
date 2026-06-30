@@ -208,3 +208,24 @@ class EmailVerificationTests(APITestCase):
         self.assertEqual(res.status_code, 200, res.data)
         user.refresh_from_db()
         self.assertTrue(user.check_password("NewStrongPass456"))
+
+
+class SetPhoneTests(APITestCase):
+    def test_user_can_update_phone(self):
+        user = make_user("ph@cardpulse.test", tag="phuser")
+        res = self.client.post(reverse("cardpulse:set-phone"), {"phone": "+233 20 123 4567"},
+                               format="json", HTTP_AUTHORIZATION=auth(user))
+        self.assertEqual(res.status_code, 200, res.data)
+        user.refresh_from_db()
+        self.assertEqual(user.phone, "+233 20 123 4567")
+
+    def test_invalid_phone_rejected(self):
+        user = make_user("ph2@cardpulse.test", tag="phuser2")
+        res = self.client.post(reverse("cardpulse:set-phone"), {"phone": "abc"},
+                               format="json", HTTP_AUTHORIZATION=auth(user))
+        self.assertEqual(res.status_code, 400)
+
+    def test_phone_requires_auth(self):
+        res = self.client.post(reverse("cardpulse:set-phone"), {"phone": "+2348012345678"},
+                               format="json")
+        self.assertIn(res.status_code, (401, 403))

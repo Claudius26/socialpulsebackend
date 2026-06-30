@@ -82,6 +82,17 @@ class SetTagSerializer(serializers.Serializer):
         return tag
 
 
+class SetPhoneSerializer(serializers.Serializer):
+    # Allow digits, an optional leading +, spaces, dashes and parentheses.
+    phone = serializers.RegexField(
+        r"^\+?[0-9\s\-()]{6,20}$",
+        error_messages={"invalid": "Enter a valid phone number."},
+    )
+
+    def validate_phone(self, value):
+        return value.strip()
+
+
 class SetTransactionPinSerializer(serializers.Serializer):
     """First-time PIN set — requires the account password to authorize."""
     password = serializers.CharField(write_only=True)

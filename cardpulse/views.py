@@ -20,6 +20,7 @@ from .serializers import (
     CardPulseUserSerializer,
     TagCheckSerializer,
     SetTagSerializer,
+    SetPhoneSerializer,
     SetTransactionPinSerializer,
     ChangeTransactionPinSerializer,
     VerifyEmailSerializer,
@@ -226,6 +227,22 @@ class SetTagView(generics.GenericAPIView):
         user.save(update_fields=["tag"])
         services.record_audit("cardpulse_set_tag", user=user, detail=f"@{user.tag}")
         return Response({"tag": user.tag}, status=status.HTTP_200_OK)
+
+
+class SetPhoneView(generics.GenericAPIView):
+    """Let a signed-in CardPulse user update their phone number."""
+    permission_classes = [IsCardPulseUser]
+    serializer_class = SetPhoneSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        user.phone = serializer.validated_data["phone"]
+        user.save(update_fields=["phone"])
+        services.record_audit("cardpulse_set_phone", user=user,
+                              ip_address=services.client_ip(request))
+        return Response({"phone": user.phone}, status=status.HTTP_200_OK)
 
 
 class SetTransactionPinView(generics.GenericAPIView):

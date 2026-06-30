@@ -12,6 +12,7 @@ from .views import (
     admin_list_deposits,
     admin_reject_manual_deposit,
     admin_list_numbers,
+    admin_number_sms,
     admin_overview,
 )
 
@@ -31,5 +32,6 @@ urlpatterns = [
     path("admin/manual/confirm/<uuid:pk>/", admin_confirm_manual_deposit, name="admin_confirm_manual"),
     path("admin/manual/reject/<uuid:pk>/", admin_reject_manual_deposit, name="admin_reject_manual"),
     path("admin/numbers/", admin_list_numbers, name="admin_list_numbers"),
+    path("admin/numbers/<int:pk>/sms/", admin_number_sms, name="admin_number_sms"),
     path("admin/overview/", admin_overview, name="admin_overview"),
 ]

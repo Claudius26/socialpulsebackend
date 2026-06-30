@@ -136,3 +136,28 @@ class AdminEndpointTests(APITestCase):
         r2 = self.client.get("/api/deposit/admin/numbers/")
         self.assertEqual(r2.status_code, 200)
         self.assertIsInstance(r2.data, list)
+
+    def test_admin_number_sms(self):
+        from virtualnumbers.models import VirtualNumber, ReceivedSMS
+        owner = User.objects.create_user(username="o", email="o@test.com",
+                                         password="pass12345", full_name="O")
+        Wallet.objects.create(user=owner, balance=Decimal("0"), currency="NGN")
+        vn = VirtualNumber.objects.create(
+            user=owner, country="US", service="whatsapp", phone_number="+1555",
+            activation_id="a1", cost=Decimal("10"), status="Active",
+        )
+        ReceivedSMS.objects.create(virtual_number=vn, text="Your code is 123456")
+
+        admin = User.objects.create_user(username="adm2", email="adm2@test.com",
+                                         password="pass12345", full_name="Adm", is_staff=True)
+        self.client.force_authenticate(user=admin)
+        r = self.client.get(f"/api/deposit/admin/numbers/{vn.id}/sms/")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["phone_number"], "+1555")
+        self.assertEqual(r.data["messages"][0]["text"], "Your code is 123456")
+
+    def test_admin_number_sms_requires_staff(self):
+        normal = User.objects.create_user(username="n2", email="n2@test.com",
+                                          password="pass12345", full_name="N")
+        self.client.force_authenticate(user=normal)
+        self.assertIn(self.client.get("/api/deposit/admin/numbers/1/sms/").status_code, (401, 403))

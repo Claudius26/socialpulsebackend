@@ -514,6 +514,29 @@ def admin_list_numbers(request):
 
 @api_view(["GET"])
 @permission_classes([permissions.IsAdminUser])
+def admin_number_sms(request, pk):
+    """All SMS messages received on a specific virtual number (admin view)."""
+    vn = get_object_or_404(VirtualNumber.objects.select_related("user"), pk=pk)
+    messages = [
+        {
+            "id": m.id,
+            "text": m.text,
+            "received_at": m.received_at.isoformat() if m.received_at else None,
+        }
+        for m in vn.messages.order_by("received_at")
+    ]
+    return Response({
+        "id": vn.id,
+        "phone_number": vn.phone_number,
+        "service": vn.service,
+        "country": vn.country,
+        "user_email": vn.user.email,
+        "messages": messages,
+    }, status=200)
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAdminUser])
 def admin_overview(request):
     """Aggregated platform stats for the admin dashboard."""
     numbers = VirtualNumber.objects.all()

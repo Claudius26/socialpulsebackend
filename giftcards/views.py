@@ -42,7 +42,11 @@ class GiftcardCatalogView(generics.GenericAPIView):
         try:
             data = services.fetch_catalog(country=country, page=page, size=size, search=search)
         except ProviderError as exc:
-            return Response({"error": f"Giftcard provider unavailable: {exc}"}, status=502)
+            logger.warning("Giftcard provider unavailable: %s", exc)
+            return Response(
+                {"error": "This service is temporarily unavailable. Please try again later."},
+                status=503,
+            )
         return Response(data, status=200)
 
 
@@ -54,7 +58,11 @@ class GiftcardProductView(generics.GenericAPIView):
         try:
             raw = get_giftcard_provider().get_product(product_id)
         except ProviderError as exc:
-            return Response({"error": f"Giftcard provider unavailable: {exc}"}, status=502)
+            logger.warning("Giftcard provider unavailable: %s", exc)
+            return Response(
+                {"error": "This service is temporarily unavailable. Please try again later."},
+                status=503,
+            )
         if not isinstance(raw, dict) or not raw.get("productId"):
             return Response({"error": "Product not found"}, status=404)
         return Response(services.normalize_product(raw), status=200)

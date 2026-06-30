@@ -16,6 +16,12 @@ from django.db.models import F
 
 from cardpulse.services import get_rate_config, record_ledger, record_profit, record_audit
 from cardpulse.crypto import encrypt, decrypt
+from common import fx
+
+
+def _wallet_currency(user) -> str:
+    w = getattr(user, "wallet", None)
+    return (getattr(w, "currency", None) or "NGN") if w else "NGN"
 
 logger = logging.getLogger(__name__)
 
@@ -260,8 +266,8 @@ def purchase_giftcard(user, product_id, face_value, *, idempotency_key, ip=None)
 
     try:
         product = get_giftcard_provider().get_product(product_id)
-    except ProviderError as exc:
-        raise GiftcardError(f"Giftcard provider unavailable: {exc}", status=502)
+    except ProviderError:
+        raise GiftcardError("This service is temporarily unavailable. Please try again later.", status=503)
     if not isinstance(product, dict) or not product.get("productId"):
         raise GiftcardError("Product not found", status=404)
 
@@ -273,22 +279,29 @@ def purchase_giftcard(user, product_id, face_value, *, idempotency_key, ip=None)
         product.get("senderCurrencyCode") or recipient_ccy
     )).quantize(Decimal("0.01"))
 
+    # Charge the wallet in ITS currency (convert the NGN price; round exactly).
+    wcur = _wallet_currency(user)
+    try:
+        charge = fx.convert(amount_ngn, "NGN", wcur)
+    except fx.FxError:
+        raise GiftcardError("Currency conversion unavailable. Please try again.", status=503)
+
     # Step A — reserve funds + create the order atomically.
     try:
         with transaction.atomic():
             wallet = Wallet.objects.select_for_update().get(user=user)
-            if _money(wallet.balance) < amount_ngn:
+            if _money(wallet.balance) < charge:
                 raise GiftcardError("Insufficient wallet balance.", status=402)
-            wallet.balance = F("balance") - amount_ngn
+            wallet.balance = F("balance") - charge
             wallet.save(update_fields=["balance"])
             wallet.refresh_from_db(fields=["balance"])
             order = GiftCardOrder.objects.create(
                 user=user, product_id=product["productId"],
                 product_name=product.get("productName", ""), face_value=fv,
-                currency=recipient_ccy, unit_price=unit_price, amount_ngn=amount_ngn,
+                currency=recipient_ccy, unit_price=unit_price, amount_ngn=charge,
                 idempotency_key=idempotency_key, status=GiftCardOrder.STATUS_PENDING,
             )
-            record_ledger(user, "debit", "giftcard_purchase", amount_ngn,
+            record_ledger(user, "debit", "giftcard_purchase", charge, currency=wcur,
                           balance_after=wallet.balance, reference=f"order:{order.id}",
                           description=product.get("productName", ""))
     except IntegrityError:
@@ -308,14 +321,16 @@ def purchase_giftcard(user, product_id, face_value, *, idempotency_key, ip=None)
         # Step B-fail — refund and mark the order failed.
         with transaction.atomic():
             wallet = Wallet.objects.select_for_update().get(user=user)
-            wallet.balance = F("balance") + amount_ngn
+            wallet.balance = F("balance") + charge
             wallet.save(update_fields=["balance"])
             wallet.refresh_from_db(fields=["balance"])
-            record_ledger(user, "credit", "reversal", amount_ngn,
+            record_ledger(user, "credit", "reversal", charge, currency=wcur,
                           balance_after=wallet.balance, reference=f"order:{order.id}",
                           description="Refund: giftcard purchase failed")
             order.status = GiftCardOrder.STATUS_FAILED
-            order.error = str(exc)[:255]
+            # Generic, user-safe message; the real provider error is only logged
+            # in the audit trail below (never exposed to the customer).
+            order.error = "Service temporarily unavailable. Please try again later."
             order.save(update_fields=["status", "error"])
         record_audit("giftcard_purchase_failed", user=user, ip_address=ip,
                      detail=str(exc)[:255], metadata={"order": order.id})
@@ -328,7 +343,7 @@ def purchase_giftcard(user, product_id, face_value, *, idempotency_key, ip=None)
             product_name=product.get("productName", ""),
             brand=(product.get("brand") or {}).get("brandName", ""),
             country=(product.get("country") or {}).get("isoName", ""),
-            currency=recipient_ccy, face_value=fv, face_value_ngn=amount_ngn,
+            currency=recipient_ccy, face_value=fv, face_value_ngn=charge,
             cost_ngn=cost_ngn, code_encrypted=encrypt(code), pin_encrypted=encrypt(pin),
             status=GiftCard.STATUS_OWNED if code else GiftCard.STATUS_PROCESSING,
             source=GiftCard.SOURCE_MINTED, redeemable=bool(code),
@@ -393,10 +408,15 @@ from django.utils import timezone  # noqa: E402
 
 
 def _credit_payout_and_bank_card(user, card, trade):
-    """Pay the trader, move the card into platform inventory, record profit."""
+    """Pay the trader, move the card into platform inventory, record profit.
+
+    trade.payout_ngn already holds the payout in the user's WALLET currency
+    (quoted + locked at trade time), so we credit it as-is. Profit stays in NGN.
+    """
     from users.models import Wallet
     from .models import GiftCard
 
+    wcur = _wallet_currency(user)
     wallet = Wallet.objects.select_for_update().get(user=user)
     wallet.balance = F("balance") + trade.payout_ngn
     wallet.save(update_fields=["balance"])
@@ -407,7 +427,7 @@ def _credit_payout_and_bank_card(user, card, trade):
     card.redeemable = False
     card.save(update_fields=["owner", "status", "redeemable"])
 
-    record_ledger(user, "credit", "trade_payout", trade.payout_ngn,
+    record_ledger(user, "credit", "trade_payout", trade.payout_ngn, currency=wcur,
                   balance_after=wallet.balance, reference=f"trade:{trade.id}",
                   description=card.product_name)
     record_profit(trade.profit_ngn, user=user, source="trade", reference=f"trade:{trade.id}")
@@ -439,8 +459,17 @@ def trade_card(user, card_id, pin, *, ip=None):
             raise GiftcardError("This card's code is still being issued. Try again shortly.", status=409)
 
         value = (Decimal(str(card.face_value)) * currency_to_ngn_rate(card.currency)).quantize(Decimal("0.01"))
-        payout = (value * rate).quantize(Decimal("0.01"))
-        profit = (value - payout).quantize(Decimal("0.01"))
+        payout_ngn = (value * rate).quantize(Decimal("0.01"))   # NGN, internal
+        profit = (value - payout_ngn).quantize(Decimal("0.01"))  # NGN, platform margin
+
+        # Quote the payout in the trader's wallet currency and lock it now.
+        wcur = _wallet_currency(user)
+        try:
+            payout = fx.convert(payout_ngn, "NGN", wcur)
+        except fx.FxError:
+            raise GiftcardError(
+                "Cash-out is temporarily unavailable. Please try again later.", status=503
+            )
 
         trade = GiftCardTrade(
             user=user, card=card, face_value=card.face_value, currency=card.currency,
@@ -556,8 +585,17 @@ def _approve_sale_payout(sale):
 
     rate = Decimal(str(get_rate_config().trade_payout_rate))
     value = (Decimal(str(sale.face_value)) * currency_to_ngn_rate(sale.currency)).quantize(Decimal("0.01"))
-    payout = (value * rate).quantize(Decimal("0.01"))
-    profit = (value - payout).quantize(Decimal("0.01"))
+    payout_ngn = (value * rate).quantize(Decimal("0.01"))   # NGN, internal
+    profit = (value - payout_ngn).quantize(Decimal("0.01"))  # NGN, platform margin
+
+    # Pay the seller in their wallet currency.
+    wcur = _wallet_currency(sale.user)
+    try:
+        payout = fx.convert(payout_ngn, "NGN", wcur)
+    except fx.FxError:
+        raise GiftcardError(
+            "Payout is temporarily unavailable. Please try again later.", status=503
+        )
 
     with transaction.atomic():
         locked = GiftCardSale.objects.select_for_update().get(pk=sale.pk)
@@ -572,7 +610,8 @@ def _approve_sale_payout(sale):
         locked.profit_ngn = profit
         locked.reviewed_at = timezone.now()
         locked.save(update_fields=["status", "payout_ngn", "profit_ngn", "reviewed_at"])
-        record_ledger(locked.user, "credit", "trade_payout", payout, balance_after=wallet.balance,
+        record_ledger(locked.user, "credit", "trade_payout", payout, currency=wcur,
+                      balance_after=wallet.balance,
                       reference=f"sale:{locked.id}", description=f"{locked.brand} sale")
         record_profit(profit, user=locked.user, source="sale", reference=f"sale:{locked.id}")
     sale.refresh_from_db()

@@ -13,6 +13,10 @@ urlpatterns = [
     path("api/v1/cardpulse/p2p/", include("p2p.urls")),
     path("api/v1/cardpulse/wallet/", include("banking.urls")),
     path("api/v1/cardpulse/admin/", include("cardpulse.admin_urls")),
+    # CardPulse reuses the existing virtual-number flow under its own namespace
+    # (same views; they charge the caller's cash wallet).
+    path("api/v1/cardpulse/numbers/",
+         include(("virtualnumbers.urls", "cardpulse_numbers"), namespace="cardpulse_numbers")),
 
 
 ]

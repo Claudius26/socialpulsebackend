@@ -369,23 +369,34 @@ def transaction_history(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAdminUser])
 def admin_list_users(request):
-    def fetch_users():
-        users = User.objects.all().order_by("-date_joined")
-        return [
-            {
-                "id": u.id,
-                "username": u.username,
-                "email": u.email,
-                "full_name": getattr(u, "full_name", ""),
-                "country": getattr(u, "country", None),
-                "is_active": u.is_active,
-                "is_staff": u.is_staff,
-                "date_joined": u.date_joined.isoformat() if u.date_joined else None,
-            }
-            for u in users
-        ]
+    # Not cached: online status must be live.
+    from datetime import timedelta
+    from django.utils import timezone
+    from giftcards.models import GiftCardTrade, GiftCardSale
 
-    data = get_or_set_cache(admin_users_key(), fetch_users, timeout=300)
+    online_cutoff = timezone.now() - timedelta(minutes=5)
+    traded_ids = set(GiftCardTrade.objects.values_list("user_id", flat=True)) | \
+        set(GiftCardSale.objects.values_list("user_id", flat=True))
+
+    users = User.objects.all().order_by("-date_joined")
+    data = [
+        {
+            "id": u.id,
+            "username": u.username,
+            "email": u.email,
+            "full_name": getattr(u, "full_name", ""),
+            "phone": getattr(u, "phone", None),
+            "country": getattr(u, "country", None),
+            "app": getattr(u, "app", "socialpulse"),
+            "is_active": u.is_active,
+            "is_staff": u.is_staff,
+            "is_online": bool(u.last_seen and u.last_seen >= online_cutoff),
+            "last_seen": u.last_seen.isoformat() if u.last_seen else None,
+            "traded": u.id in traded_ids,
+            "date_joined": u.date_joined.isoformat() if u.date_joined else None,
+        }
+        for u in users
+    ]
     return Response(data, status=200)
 
 
@@ -484,8 +495,12 @@ def admin_overview(request):
     deposits = Deposit.objects.all()
     boosts = BoostRequest.objects.all()
 
+    from datetime import timedelta
+    online_cutoff = timezone.now() - timedelta(minutes=5)
+
     return Response({
         "users": User.objects.count(),
+        "users_online": User.objects.filter(last_seen__gte=online_cutoff).count(),
         "numbers": {
             "total": numbers.count(),
             # "sold" = successfully purchased numbers, excluding cancelled/failed.

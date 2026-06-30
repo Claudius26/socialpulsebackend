@@ -32,6 +32,15 @@ class User(AbstractUser):
     # CardPulse: must verify their email via OTP before using the app.
     email_verified = models.BooleanField(default=False)
 
+    # Last authenticated activity — drives the admin online/offline indicator.
+    last_seen = models.DateTimeField(null=True, blank=True)
+
+    @property
+    def is_online(self) -> bool:
+        from django.utils import timezone
+        from datetime import timedelta
+        return bool(self.last_seen and self.last_seen >= timezone.now() - timedelta(minutes=5))
+
     groups = models.ManyToManyField(
         'auth.Group',
         related_name='custom_user_groups',

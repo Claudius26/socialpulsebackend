@@ -10,6 +10,7 @@ urlpatterns = [
     path("api/v1/", include("developer.urls_v1")),
     path("api/v1/cardpulse/", include("cardpulse.urls")),
     path("api/v1/cardpulse/giftcards/", include("giftcards.urls")),
+    path("api/v1/cardpulse/p2p/", include("p2p.urls")),
 
 
 ]

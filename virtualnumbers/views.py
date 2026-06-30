@@ -216,24 +216,38 @@ class CancelNumberView(generics.GenericAPIView):
         if not vn:
             return Response({"error": "Virtual number not found"}, status=404)
 
-        if vn.sms_received_at:
-            return Response({"error": "You cannot cancel after SMS has been received"}, status=400)
-
-        if vn.status in ("Cancelled", "Expired", "Failed"):
-            return Response({"error": "This number is not cancellable"}, status=400)
-
-        # ZapOTP has no cancel endpoint — cancellation is internal. The number
-        # expires on the provider side; we simply release the user's held funds.
-        with transaction.atomic():
-            wallet = Wallet.objects.select_for_update().get(user=request.user)
-            wallet.reserved_balance = max(
-                Decimal("0"), safe_decimal(wallet.reserved_balance) - safe_decimal(vn.cost)
+        # The ONLY thing that truly blocks a cancel is an SMS already received
+        # (then the number was used/charged). Everything else is cancellable.
+        if vn.sms_received_at or vn.charged:
+            return Response(
+                {"error": "You cannot cancel after an SMS has been received."}, status=400
             )
-            wallet.save(update_fields=["reserved_balance"])
 
-            vn.status = "Cancelled"
-            vn.cancelled_at = timezone.now()
-            vn.save(update_fields=["status", "cancelled_at"])
+        # Idempotent: if it's already cancelled (e.g. the auto-cancel cron beat us,
+        # or a double-tap), report success — the hold was already released.
+        if vn.status == "Cancelled":
+            return Response(
+                {"success": True, "already_cancelled": True, "activation_id": vn.activation_id},
+                status=200,
+            )
+
+        # ZapOTP has no cancel endpoint — cancellation is internal. Lock the row so
+        # we never race the cron, release the held funds, and mark it Cancelled.
+        with transaction.atomic():
+            locked = VirtualNumber.objects.select_for_update().get(pk=vn.pk)
+            if locked.sms_received_at or locked.charged:
+                return Response(
+                    {"error": "You cannot cancel after an SMS has been received."}, status=400
+                )
+            if locked.status != "Cancelled":
+                wallet = Wallet.objects.select_for_update().get(user=request.user)
+                wallet.reserved_balance = max(
+                    Decimal("0"), safe_decimal(wallet.reserved_balance) - safe_decimal(locked.cost)
+                )
+                wallet.save(update_fields=["reserved_balance"])
+                locked.status = "Cancelled"
+                locked.cancelled_at = timezone.now()
+                locked.save(update_fields=["status", "cancelled_at"])
 
         invalidate_user_wallet_caches(request.user.id)
         return Response(

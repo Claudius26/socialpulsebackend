@@ -59,3 +59,47 @@ class NumberCurrencyTests(APITestCase):
         from virtualnumbers.models import VirtualNumber
         vn = VirtualNumber.objects.get(user=self.user)
         self.assertEqual(vn.cost, Decimal("7.00"))
+
+
+class CancelTests(APITestCase):
+    def setUp(self):
+        self.user = User(email="c@socialpulse.test", username="c@socialpulse.test", full_name="C")
+        self.user.set_password("x")
+        self.user.save()
+        self.wallet = get_or_create_wallet(self.user)
+        self.wallet.reserved_balance = Decimal("7.00")
+        self.wallet.save()
+
+    def _make(self, **over):
+        from virtualnumbers.models import VirtualNumber
+        defaults = dict(user=self.user, country="US", service="whatsapp",
+                        phone_number="+1555", activation_id="act-1", cost=Decimal("7.00"),
+                        status="Pending", charged=False)
+        defaults.update(over)
+        return VirtualNumber.objects.create(**defaults)
+
+    def test_cancel_releases_and_marks_cancelled(self):
+        self._make()
+        res = self.client.post(reverse("cancel_number"), {"activation_id": "act-1"},
+                               format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 200, res.data)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.reserved_balance, Decimal("0.00"))
+
+    def test_cancel_is_idempotent(self):
+        from virtualnumbers.models import VirtualNumber
+        self._make(status="Cancelled")
+        res = self.client.post(reverse("cancel_number"), {"activation_id": "act-1"},
+                               format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertTrue(res.data.get("success"))
+        # hold not double-released
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.reserved_balance, Decimal("7.00"))
+
+    def test_cannot_cancel_after_sms(self):
+        from django.utils import timezone
+        self._make(sms_received_at=timezone.now(), charged=True)
+        res = self.client.post(reverse("cancel_number"), {"activation_id": "act-1"},
+                               format="json", HTTP_AUTHORIZATION=auth(self.user))
+        self.assertEqual(res.status_code, 400)

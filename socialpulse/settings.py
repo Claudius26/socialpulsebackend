@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     "boost",
     "virtualnumbers",
     "developer",
+    "cardpulse",
 
 ]
 

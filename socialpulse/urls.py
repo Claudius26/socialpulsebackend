@@ -8,6 +8,7 @@ urlpatterns = [
    path("api/virtualnumbers/", include("virtualnumbers.urls")),
     path("api/developer/", include("developer.urls")),
     path("api/v1/", include("developer.urls_v1")),
+    path("api/v1/cardpulse/", include("cardpulse.urls")),
 
 
 ]

@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     "virtualnumbers",
     "developer",
     "cardpulse",
+    "giftcards",
 
 ]
 

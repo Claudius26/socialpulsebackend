@@ -15,6 +15,7 @@ from rest_framework.response import Response
 
 from banking.models import Withdrawal
 from banking import services as banking_services
+from common.cache_utils import get_or_set_cache
 from giftcards.models import GiftCard, GiftCardOrder, GiftCardTrade, GiftCardSale
 from giftcards import services as giftcard_services
 from p2p.models import Transfer
@@ -33,13 +34,20 @@ def _sum(qs, field):
 @api_view(["GET"])
 @permission_classes([IsAdminUser])
 def overview(request):
-    users = User.objects.filter(app=CARDPULSE)
+    def fetch_overview():
+        return _overview_payload()
+    data = get_or_set_cache("cardpulse:admin:overview:v1", fetch_overview, timeout=30)
+    return Response(data, status=200)
+
+
+def _overview_payload():
+    users = User.objects.filter(app=CARDPULSE, is_staff=False, is_superuser=False)
     wallets = Wallet.objects.filter(user__app=CARDPULSE)
     trades = GiftCardTrade.objects.all()
     withdrawals = Withdrawal.objects.all()
     inventory = GiftCard.objects.filter(owner__isnull=True, status=GiftCard.STATUS_TRADED)
 
-    return Response({
+    return {
         "users": users.count(),
         "wallet_liability": float(_sum(wallets, "balance")),
         "total_profit": float(_sum(ProfitEntry.objects.all(), "amount")),
@@ -67,14 +75,14 @@ def overview(request):
             "paid_out": float(_sum(withdrawals.filter(status="success"), "amount")),
         },
         "transfers": Transfer.objects.count(),
-    }, status=200)
+    }
 
 
 @api_view(["GET"])
 @permission_classes([IsAdminUser])
 def users_list(request):
     rows = (
-        User.objects.filter(app=CARDPULSE)
+        User.objects.filter(app=CARDPULSE, is_staff=False, is_superuser=False)
         .select_related("wallet")
         .annotate(
             cards=Count("giftcards", distinct=True),

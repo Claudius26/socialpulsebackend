@@ -359,7 +359,8 @@ def admin_login(request):
 @permission_classes([permissions.IsAdminUser])
 def admin_dashboard_stats(request):
     def fetch_stats():
-        total_users = User.objects.count()
+        # Admins/staff are operators, not customers — never count them.
+        total_users = User.objects.filter(is_staff=False, is_superuser=False).count()
         total_deposits = Deposit.objects.count()
         pending_deposits = Deposit.objects.filter(status="pending").count()
         paid_deposits = Deposit.objects.filter(status="paid").count()

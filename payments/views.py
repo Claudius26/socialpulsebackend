@@ -405,7 +405,8 @@ def admin_list_users(request):
     traded_ids = set(GiftCardTrade.objects.values_list("user_id", flat=True)) | \
         set(GiftCardSale.objects.values_list("user_id", flat=True))
 
-    users = User.objects.all().order_by("-date_joined")
+    # Customers only — the admin/staff accounts aren't part of the user base.
+    users = User.objects.filter(is_staff=False, is_superuser=False).order_by("-date_joined")
     data = [
         {
             "id": u.id,
@@ -538,42 +539,52 @@ def admin_number_sms(request, pk):
 @api_view(["GET"])
 @permission_classes([permissions.IsAdminUser])
 def admin_overview(request):
-    """Aggregated platform stats for the admin dashboard."""
-    numbers = VirtualNumber.objects.all()
-    by_status = {row["status"]: row["n"] for row in numbers.values("status").annotate(n=Count("id"))}
+    """Aggregated platform stats for the admin dashboard.
 
-    deposits = Deposit.objects.all()
-    boosts = BoostRequest.objects.all()
+    Cached briefly (these are heavy aggregations) — the online-now window is
+    already 5 minutes, so a few seconds of staleness is invisible.
+    """
+    def fetch_overview():
+        from datetime import timedelta
+        numbers = VirtualNumber.objects.all()
+        by_status = {row["status"]: row["n"] for row in numbers.values("status").annotate(n=Count("id"))}
+        deposits = Deposit.objects.all()
+        boosts = BoostRequest.objects.all()
+        online_cutoff = timezone.now() - timedelta(minutes=5)
 
-    from datetime import timedelta
-    online_cutoff = timezone.now() - timedelta(minutes=5)
+        # Admins/staff are operators, not customers — exclude them from user
+        # counts and from "online now" (the admin viewing this isn't a "user").
+        customers = User.objects.filter(is_staff=False, is_superuser=False)
 
-    return Response({
-        "users": User.objects.count(),
-        "users_online": User.objects.filter(last_seen__gte=online_cutoff).count(),
-        "numbers": {
-            "total": numbers.count(),
-            # "sold" = successfully purchased numbers, excluding cancelled/failed.
-            "sold": numbers.exclude(status__in=["Cancelled", "Failed"]).count(),
-            "api": numbers.filter(funding_source="api").count(),
-            "normal": numbers.filter(funding_source="wallet").count(),
-            "sms_received": numbers.filter(sms_received_at__isnull=False).count(),
-            "cancelled": by_status.get("Cancelled", 0),
-            "pending": by_status.get("Pending", 0),
-            "active": by_status.get("Active", 0),
-            "expired": by_status.get("Expired", 0),
-            "revenue": float(numbers.filter(charged=True).aggregate(t=Sum("cost"))["t"] or 0),
-        },
-        "deposits": {
-            "total": deposits.count(),
-            "paid": deposits.filter(status="paid").count(),
-            "pending": deposits.filter(status="pending").count(),
-            "failed": deposits.filter(status="failed").count(),
-            "volume": float(deposits.filter(status="paid").aggregate(t=Sum("amount"))["t"] or 0),
-        },
-        "boosts": {
-            "total": boosts.count(),
-            "processing": boosts.filter(status="Processing").count(),
-            "failed": boosts.filter(status="Failed").count(),
-        },
-    }, status=200)
+        return {
+            "users": customers.count(),
+            "users_online": customers.filter(last_seen__gte=online_cutoff).count(),
+            "numbers": {
+                "total": numbers.count(),
+                # "sold" = successfully purchased numbers, excluding cancelled/failed.
+                "sold": numbers.exclude(status__in=["Cancelled", "Failed"]).count(),
+                "api": numbers.filter(funding_source="api").count(),
+                "normal": numbers.filter(funding_source="wallet").count(),
+                "sms_received": numbers.filter(sms_received_at__isnull=False).count(),
+                "cancelled": by_status.get("Cancelled", 0),
+                "pending": by_status.get("Pending", 0),
+                "active": by_status.get("Active", 0),
+                "expired": by_status.get("Expired", 0),
+                "revenue": float(numbers.filter(charged=True).aggregate(t=Sum("cost"))["t"] or 0),
+            },
+            "deposits": {
+                "total": deposits.count(),
+                "paid": deposits.filter(status="paid").count(),
+                "pending": deposits.filter(status="pending").count(),
+                "failed": deposits.filter(status="failed").count(),
+                "volume": float(deposits.filter(status="paid").aggregate(t=Sum("amount"))["t"] or 0),
+            },
+            "boosts": {
+                "total": boosts.count(),
+                "processing": boosts.filter(status="Processing").count(),
+                "failed": boosts.filter(status="Failed").count(),
+            },
+        }
+
+    data = get_or_set_cache("admin:overview:v1", fetch_overview, timeout=30)
+    return Response(data, status=200)

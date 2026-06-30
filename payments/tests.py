@@ -156,6 +156,27 @@ class AdminEndpointTests(APITestCase):
         self.assertEqual(r.data["phone_number"], "+1555")
         self.assertEqual(r.data["messages"][0]["text"], "Your code is 123456")
 
+    def test_overview_excludes_admins_from_user_counts(self):
+        from django.utils import timezone
+        from django.core.cache import cache
+        cache.clear()  # overview is cached; start clean for an exact assertion
+        admin = User.objects.create_user(username="adm3", email="adm3@test.com",
+                                         password="pass12345", full_name="Adm", is_staff=True)
+        admin.last_seen = timezone.now(); admin.save(update_fields=["last_seen"])
+        # two real customers, one of them online
+        c1 = User.objects.create_user(username="c1", email="c1@test.com",
+                                      password="pass12345", full_name="C1")
+        c1.last_seen = timezone.now(); c1.save(update_fields=["last_seen"])
+        User.objects.create_user(username="c2", email="c2@test.com",
+                                 password="pass12345", full_name="C2")
+        self.client.force_authenticate(user=admin)
+        r = self.client.get("/api/deposit/admin/overview/")
+        self.assertEqual(r.data["users"], 2)          # admin not counted
+        self.assertEqual(r.data["users_online"], 1)   # admin not "online"
+        # admin absent from the user list too
+        rows = self.client.get("/api/deposit/admin/users/").data
+        self.assertNotIn("adm3@test.com", [u["email"] for u in rows])
+
     def test_admin_number_sms_requires_staff(self):
         normal = User.objects.create_user(username="n2", email="n2@test.com",
                                           password="pass12345", full_name="N")

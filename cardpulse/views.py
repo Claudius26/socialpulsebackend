@@ -97,6 +97,15 @@ class CardPulseLoginView(generics.GenericAPIView):
         login = serializer.validated_data["login"].strip()
         password = serializer.validated_data["password"]
 
+        # Brute-force lockout: refuse while the account is in cool-off.
+        from common import login_guard
+        locked = login_guard.locked_seconds(login)
+        if locked:
+            return Response(
+                {"error": login_guard.lock_message(locked), "retry_after": locked},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
         # Resolve email OR username/@tag -> the account. We look up admins too,
         # only so the staff check below fires — admins are NEVER allowed in.
         realm_or_admin = Q(app=User.APP_CARDPULSE) | Q(is_staff=True) | Q(is_superuser=True)
@@ -114,7 +123,16 @@ class CardPulseLoginView(generics.GenericAPIView):
         if user and (user.is_staff or user.is_superuser):
             user = None
         if not user or getattr(user, "app", None) != User.APP_CARDPULSE:
+            lock = login_guard.record_failure(login)
+            if lock:
+                return Response(
+                    {"error": login_guard.lock_message(lock), "retry_after": lock},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
             return Response({"error": "Invalid credentials."}, status=status.HTTP_400_BAD_REQUEST)
+
+        login_guard.clear_failures(login)
+        User.objects.filter(pk=user.pk).update(last_seen=timezone.now())
 
         wallet = get_or_create_wallet(user, currency=get_currency_from_country(user.country))
         services.record_audit("cardpulse_login", user=user, ip_address=services.client_ip(request))

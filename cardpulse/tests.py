@@ -262,3 +262,35 @@ class AdminBlockedFromAppTests(APITestCase):
             "login": "normal@cardpulse.test", "password": "StrongPass123",
         }, format="json")
         self.assertEqual(res.status_code, 200, res.data)
+
+
+class LoginLockoutTests(APITestCase):
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        make_user("lock@cardpulse.test", app=User.APP_CARDPULSE, tag="lockuser")
+
+    def _try(self, password):
+        return self.client.post(reverse("cardpulse:login"),
+                                {"login": "lock@cardpulse.test", "password": password}, format="json")
+
+    def test_locks_after_five_failures(self):
+        for _ in range(5):
+            r = self._try("wrong")
+        self.assertEqual(r.status_code, 429)
+        self.assertIn("retry_after", r.data)
+        # even the CORRECT password is refused while locked
+        self.assertEqual(self._try("StrongPass123").status_code, 429)
+
+    def test_success_before_lock_resets_counter(self):
+        for _ in range(3):
+            self._try("wrong")
+        self.assertEqual(self._try("StrongPass123").status_code, 200)
+        # counter cleared -> a new wrong attempt is just 400, not locked
+        self.assertEqual(self._try("wrong").status_code, 400)
+
+    def test_login_sets_last_seen(self):
+        User.objects.filter(email="lock@cardpulse.test").update(last_seen=None)
+        self._try("StrongPass123")
+        u = User.objects.get(email="lock@cardpulse.test")
+        self.assertIsNotNone(u.last_seen)

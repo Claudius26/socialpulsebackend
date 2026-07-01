@@ -5,6 +5,7 @@ from decimal import Decimal
 import requests
 from countryinfo import CountryInfo
 from django.contrib.auth import authenticate, get_user_model
+from django.utils import timezone
 from django.db.models import Sum, Count, Q
 from django.db.models.functions import Coalesce
 from rest_framework import generics, permissions, status
@@ -220,6 +221,15 @@ class LoginView(generics.GenericAPIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+            # Brute-force lockout: refuse while the account is in cool-off.
+            from common import login_guard
+            locked = login_guard.locked_seconds(identifier)
+            if locked:
+                return Response(
+                    {"error": login_guard.lock_message(locked), "retry_after": locked},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
+
             if "@" in identifier:
                 account = User.objects.filter(email__iexact=identifier).first()
             else:
@@ -227,10 +237,21 @@ class LoginView(generics.GenericAPIView):
 
             user = authenticate(request, email=account.email, password=password) if account else None
             if not user:
+                lock = login_guard.record_failure(identifier)
+                if lock:
+                    return Response(
+                        {"error": login_guard.lock_message(lock), "retry_after": lock},
+                        status=status.HTTP_429_TOO_MANY_REQUESTS,
+                    )
                 return Response(
                     {"error": "Invalid credentials."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            login_guard.clear_failures(identifier)
+            # Mark the user active now so they show as "online" immediately (the
+            # website may not hit another authenticated endpoint right after login).
+            User.objects.filter(pk=user.pk).update(last_seen=timezone.now())
 
             wallet = getattr(user, "wallet", None)
             if not wallet:

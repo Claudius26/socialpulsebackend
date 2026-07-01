@@ -339,3 +339,16 @@ class SecureAvatarTests(APITestCase):
         self.assertTrue(me.data["user"]["has_avatar"])
         self.assertNotIn("avatar_encrypted", me.data["user"])
         self.assertNotIn("avatar", me.data["user"])
+
+
+class UpdateProfileTests(APITestCase):
+    def test_update_full_name_and_phone(self):
+        u = make_user("up@cardpulse.test", tag="upuser")
+        res = self.client.post(reverse("cardpulse:update-profile"),
+                               {"full_name": "New Name", "phone": "+2348012345678"},
+                               format="json", HTTP_AUTHORIZATION=auth(u))
+        self.assertEqual(res.status_code, 200, res.data)
+        u.refresh_from_db()
+        self.assertEqual(u.full_name, "New Name")
+        self.assertEqual(u.first_name, "New")
+        self.assertEqual(u.phone, "+2348012345678")

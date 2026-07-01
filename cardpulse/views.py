@@ -268,6 +268,37 @@ class SetPhoneView(generics.GenericAPIView):
         return Response({"phone": user.phone}, status=status.HTTP_200_OK)
 
 
+class UpdateProfileView(generics.GenericAPIView):
+    """Update editable profile fields (full name, phone) in one call."""
+    permission_classes = [IsCardPulseUser]
+
+    def post(self, request):
+        user = request.user
+        fields = []
+        full_name = request.data.get("full_name")
+        if full_name is not None:
+            full_name = str(full_name).strip()
+            if not full_name:
+                return Response({"error": "Name can't be empty."}, status=400)
+            user.full_name = full_name[:100]
+            parts = full_name.split()
+            user.first_name = parts[0][:150]
+            user.last_name = (" ".join(parts[1:]))[:150]
+            fields += ["full_name", "first_name", "last_name"]
+
+        phone = request.data.get("phone")
+        if phone is not None:
+            phone = str(phone).strip()
+            if phone and not __import__("re").match(r"^\+?[0-9\s\-()]{6,20}$", phone):
+                return Response({"error": "Enter a valid phone number."}, status=400)
+            user.phone = phone
+            fields.append("phone")
+
+        if fields:
+            user.save(update_fields=fields)
+        return Response(CardPulseUserSerializer(user).data, status=status.HTTP_200_OK)
+
+
 # --------------------------------------------------------------------------- #
 # Profile photo — uploaded as a base64 data URI, validated, then stored
 # ENCRYPTED at rest. Never written to disk or a public URL; only the owner can

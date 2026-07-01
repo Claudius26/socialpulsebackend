@@ -124,12 +124,16 @@ class ChangeTransactionPinSerializer(serializers.Serializer):
 
 class CardPulseUserSerializer(serializers.ModelSerializer):
     has_transaction_pin = serializers.BooleanField(read_only=True)
+    has_avatar = serializers.BooleanField(read_only=True)
     username = serializers.CharField(source="tag", read_only=True)
 
     class Meta:
         model = User
+        # NOTE: the avatar image itself is NEVER serialized here — only the
+        # has_avatar flag. The image is fetched lazily from the secure endpoint.
         fields = ("id", "first_name", "last_name", "full_name", "email", "phone",
-                  "country", "tag", "username", "email_verified", "has_transaction_pin")
+                  "country", "tag", "username", "email_verified",
+                  "has_transaction_pin", "has_avatar")
 
 
 class ChangePasswordSerializer(serializers.Serializer):

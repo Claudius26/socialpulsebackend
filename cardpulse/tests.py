@@ -294,3 +294,48 @@ class LoginLockoutTests(APITestCase):
         self._try("StrongPass123")
         u = User.objects.get(email="lock@cardpulse.test")
         self.assertIsNotNone(u.last_seen)
+
+
+class SecureAvatarTests(APITestCase):
+    def _png(self):
+        # 1x1 transparent PNG
+        return ("data:image/png;base64,"
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+
+    def test_upload_stores_encrypted_and_owner_can_read(self):
+        user = make_user("av@cardpulse.test", tag="avuser")
+        res = self.client.post(reverse("cardpulse:set-avatar"), {"image": self._png()},
+                               format="json", HTTP_AUTHORIZATION=auth(user))
+        self.assertEqual(res.status_code, 200, res.data)
+        user.refresh_from_db()
+        self.assertTrue(user.has_avatar)
+        # stored value is ciphertext, not the raw data URI
+        self.assertNotIn("data:image", user.avatar_encrypted)
+        # owner reads it back decrypted
+        got = self.client.get(reverse("cardpulse:get-avatar"), HTTP_AUTHORIZATION=auth(user))
+        self.assertTrue(got.data["image"].startswith("data:image/png"))
+
+    def test_rejects_non_image(self):
+        user = make_user("av2@cardpulse.test", tag="avuser2")
+        res = self.client.post(reverse("cardpulse:set-avatar"),
+                               {"image": "data:text/html;base64,PGh0bWw+"},
+                               format="json", HTTP_AUTHORIZATION=auth(user))
+        self.assertEqual(res.status_code, 400)
+
+    def test_another_user_cannot_read_your_avatar(self):
+        owner = make_user("av3@cardpulse.test", tag="avowner")
+        self.client.post(reverse("cardpulse:set-avatar"), {"image": self._png()},
+                         format="json", HTTP_AUTHORIZATION=auth(owner))
+        other = make_user("av4@cardpulse.test", tag="avother")
+        got = self.client.get(reverse("cardpulse:get-avatar"), HTTP_AUTHORIZATION=auth(other))
+        # other user's endpoint returns THEIR avatar (none) — never the owner's
+        self.assertIsNone(got.data["image"])
+
+    def test_me_never_includes_the_image(self):
+        user = make_user("av5@cardpulse.test", tag="avuser5")
+        self.client.post(reverse("cardpulse:set-avatar"), {"image": self._png()},
+                         format="json", HTTP_AUTHORIZATION=auth(user))
+        me = self.client.get(reverse("cardpulse:me"), HTTP_AUTHORIZATION=auth(user))
+        self.assertTrue(me.data["user"]["has_avatar"])
+        self.assertNotIn("avatar_encrypted", me.data["user"])
+        self.assertNotIn("avatar", me.data["user"])

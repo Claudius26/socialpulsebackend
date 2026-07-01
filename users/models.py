@@ -35,6 +35,15 @@ class User(AbstractUser):
     # Last authenticated activity — drives the admin online/offline indicator.
     last_seen = models.DateTimeField(null=True, blank=True)
 
+    # Profile photo, stored ENCRYPTED at rest (Fernet) as a base64 data URI.
+    # Never a public file/URL — served only to the owner via an authenticated
+    # endpoint, so images can't be scraped or hot-linked.
+    avatar_encrypted = models.TextField(blank=True, default="")
+
+    @property
+    def has_avatar(self) -> bool:
+        return bool(self.avatar_encrypted)
+
     @property
     def is_online(self) -> bool:
         from django.utils import timezone

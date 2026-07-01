@@ -603,7 +603,9 @@ def submit_sale(user, *, brand, country, face_value, currency="USD", code="", im
     sale = GiftCardSale.objects.create(
         user=user, brand=(brand or "").strip(), country=(country or "").strip(),
         currency=(currency or "USD").upper(), face_value=fv,
-        code_encrypted=encrypt(code) if code else "", image_base64=image or "",
+        # Both the card code AND the uploaded photo are encrypted at rest — the
+        # raw image is never stored in the clear or exposed via any list view.
+        code_encrypted=encrypt(code) if code else "", image_base64=encrypt(image) if image else "",
         status=GiftCardSale.STATUS_PENDING,
     )
     record_audit("giftcard_sale_submitted", user=user, ip_address=ip,

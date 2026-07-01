@@ -268,6 +268,82 @@ class SetPhoneView(generics.GenericAPIView):
         return Response({"phone": user.phone}, status=status.HTTP_200_OK)
 
 
+# --------------------------------------------------------------------------- #
+# Profile photo — uploaded as a base64 data URI, validated, then stored
+# ENCRYPTED at rest. Never written to disk or a public URL; only the owner can
+# read it back (authenticated GET). This keeps images from being scraped.
+# --------------------------------------------------------------------------- #
+_ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+_MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2 MB
+
+
+def _validate_data_uri(data_uri: str):
+    import base64
+    import binascii
+    if not isinstance(data_uri, str) or not data_uri.startswith("data:"):
+        raise ValueError("bad")
+    try:
+        header, b64 = data_uri.split(",", 1)
+        mime = header.split(";")[0].replace("data:", "").lower()
+    except ValueError:
+        raise ValueError("bad")
+    if mime not in _ALLOWED_IMAGE_TYPES:
+        raise ValueError("type")
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError("decode")
+    if len(raw) > _MAX_IMAGE_BYTES:
+        raise ValueError("size")
+    return mime, len(raw)
+
+
+class SetAvatarView(generics.GenericAPIView):
+    """Upload/replace the profile photo. Stored encrypted; never public."""
+    permission_classes = [IsCardPulseUser]
+
+    def post(self, request):
+        from cardpulse.crypto import encrypt
+        image = request.data.get("image") or ""
+        try:
+            _validate_data_uri(image)
+        except ValueError as exc:
+            reason = {
+                "type": "That image type isn't allowed. Use PNG, JPG or WebP.",
+                "size": "Image is too large. Please use one under 2 MB.",
+            }.get(str(exc), "That doesn't look like a valid image.")
+            return Response({"error": reason}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user
+        user.avatar_encrypted = encrypt(image)  # AES (Fernet) at rest
+        user.save(update_fields=["avatar_encrypted"])
+        services.record_audit("cardpulse_set_avatar", user=user,
+                              ip_address=services.client_ip(request))
+        return Response({"has_avatar": True}, status=status.HTTP_200_OK)
+
+    def delete(self, request):
+        user = request.user
+        user.avatar_encrypted = ""
+        user.save(update_fields=["avatar_encrypted"])
+        return Response({"has_avatar": False}, status=status.HTTP_200_OK)
+
+
+class GetAvatarView(generics.GenericAPIView):
+    """Return the signed-in user's OWN decrypted avatar. No one else can read it."""
+    permission_classes = [IsCardPulseUser]
+
+    def get(self, request):
+        from cardpulse.crypto import decrypt
+        enc = getattr(request.user, "avatar_encrypted", "")
+        if not enc:
+            return Response({"image": None}, status=status.HTTP_200_OK)
+        try:
+            image = decrypt(enc)
+        except Exception:
+            image = None
+        return Response({"image": image}, status=status.HTTP_200_OK)
+
+
 class SetTransactionPinView(generics.GenericAPIView):
     permission_classes = [IsCardPulseUser]
     serializer_class = SetTransactionPinSerializer
